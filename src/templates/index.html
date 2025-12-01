@@ -475,7 +475,13 @@
             currentFilename = data.filename.replace('.pdf', '');
 
             // Update Header
-            document.getElementById('fileNameDisplay').textContent = `ARQUIVO: ${data.filename}`;
+            let methodBadge = "";
+            if (stats.metodo_extracao) {
+                const isGeneric = stats.metodo_extracao.includes("GENÉRICO");
+                const badgeColor = isGeneric ? "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300 border-yellow-200 dark:border-yellow-800" : "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300 border-green-200 dark:border-green-800";
+                methodBadge = `<span class="ml-2 px-2 py-0.5 rounded text-[10px] font-mono border ${badgeColor} align-middle">${stats.metodo_extracao}</span>`;
+            }
+            document.getElementById('fileNameDisplay').innerHTML = `ARQUIVO: ${data.filename} ${methodBadge}`;
 
             // Alerts
             const alertContainer = document.getElementById('alertContainer');

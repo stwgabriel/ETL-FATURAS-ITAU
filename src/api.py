@@ -77,6 +77,12 @@ async def extract_invoice(file: UploadFile = File(...)):
             # Compras Parceladas (se parcela não for nulo)
             total_parcelado = df[df['parcela'].notna()]['valor'].sum()
 
+            # Determinar método de extração
+            extraction_method = "NATIVO ITAÚ"
+            if 'extraction_method' in df.columns and not df.empty:
+                 if "Generic" in df['extraction_method'].values:
+                     extraction_method = "GENÉRICO / OUTRO BANCO"
+
             stats = {
                 "total_declarado": validation['total_declarado'],
                 "total_extraido": validation['total_extraido'],
@@ -89,7 +95,8 @@ async def extract_invoice(file: UploadFile = File(...)):
                 "total_taxas": float(total_taxas_servicos),
                 "total_parcelado": float(total_parcelado),
                 "por_categoria": df.groupby('categoria')['valor'].sum().to_dict(),
-                "por_titular": df.groupby('titular_cartao')['valor'].sum().to_dict()
+                "por_titular": df.groupby('titular_cartao')['valor'].sum().to_dict(),
+                "metodo_extracao": extraction_method
             }
             
             response_data = {

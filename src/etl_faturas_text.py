@@ -106,6 +106,115 @@ class InvoiceProcessor:
             
         return info
 
+    def extract_generic_header(self, text):
+        """
+        Tentativa genérica de extrair cabeçalho (Total e Vencimento)
+        quando o padrão específico falha.
+        """
+        info = {
+            "valor_total_declarado": 0.0,
+            "data_emissao": None,
+            "data_vencimento": None,
+            "nome_cliente": "GENERIC CLIENT",
+            "cartao_principal": "UNKNOWN"
+        }
+        
+        # Tentar encontrar Valor Total
+        # Padrões comuns: "Valor Total", "Total a Pagar", "Valor da Fatura"
+        re_total = re.search(r'(?:Total|Valor)\s*(?:da\s*fatura|a\s*pagar|total)?\s*(?:R\$)?\s*([\d\.,]+)', text, re.IGNORECASE)
+        if re_total:
+            info["valor_total_declarado"] = self.parse_money(re_total.group(1))
+
+        # Tentar encontrar Vencimento
+        re_vencimento = re.search(r'Vencimento\s*:?\s*(\d{2}/\d{2}/\d{4})', text, re.IGNORECASE)
+        if re_vencimento:
+            info["data_vencimento"] = re_vencimento.group(1)
+            
+        # Tentar encontrar Nome (difícil sem âncoras, mas podemos tentar "Olá, Nome")
+        re_ola = re.search(r'Olá,\s*([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)', text)
+        if re_ola:
+            info["nome_cliente"] = re_ola.group(1)
+
+        return info
+
+    def extract_generic_transactions(self, page_texts, filename, header_info):
+        """
+        Extração genérica baseada em padrões de linha: Data + Descrição + Valor
+        """
+        transactions = []
+        
+        # Padrão A: Data (DD/MM) + Descrição + Valor
+        # Ex: 10/05 UBER DO BRASIL 24,90
+        pattern_a = r'(\d{2}/\d{2})\s+(.+?)\s+(-?(?:\d{1,3}(?:\.\d{3})*|\d+),\d{2})'
+        
+        # Padrão B: Descrição + Data (DD/MM) + Valor
+        # Ex: UBER DO BRASIL 10/05 24,90
+        pattern_b = r'(.+?)\s+(\d{2}/\d{2})\s+(-?(?:\d{1,3}(?:\.\d{3})*|\d+),\d{2})'
+
+        current_year = datetime.now().year
+        if header_info.get('data_vencimento'):
+            try:
+                current_year = datetime.strptime(header_info['data_vencimento'], "%d/%m/%Y").year
+            except:
+                pass
+
+        for text in page_texts:
+            lines = text.split('\n')
+            for line in lines:
+                line = line.strip()
+                if not line: continue
+                
+                # Ignorar linhas que parecem totais ou cabeçalhos comuns
+                if re.search(r'(total|saldo|pagamento|vencimento)', line, re.IGNORECASE):
+                    continue
+
+                match = None
+                dt_str = None
+                desc = None
+                val_str = None
+                
+                # Tentar Padrão A
+                m_a = re.search(pattern_a, line)
+                if m_a:
+                    dt_str, desc, val_str = m_a.groups()
+                else:
+                    # Tentar Padrão B
+                    m_b = re.search(pattern_b, line)
+                    if m_b:
+                        desc, dt_str, val_str = m_b.groups()
+                
+                if dt_str and val_str:
+                    try:
+                        valor = self.parse_money(val_str)
+                        
+                        # Data completa
+                        day, month = map(int, dt_str.split('/'))
+                        # Heurística simples de ano: se mês > mês atual + 1, ano anterior? 
+                        # Melhor usar o ano do vencimento se disponível
+                        data_transacao = f"{current_year}-{month:02d}-{day:02d}"
+                        
+                        transactions.append({
+                            "arquivo": filename,
+                            "data_emissao": header_info.get("data_emissao"),
+                            "data_vencimento": header_info.get("data_vencimento"),
+                            "valor_total_declarado": header_info.get("valor_total_declarado"),
+                            "nome_cliente": header_info.get("nome_cliente"),
+                            "cartao_principal": "GENERIC",
+                            "titular_cartao": header_info.get("nome_cliente"),
+                            "final_cartao": "XXXX",
+                            "internacional": False,
+                            "data_transacao": data_transacao,
+                            "estabelecimento": desc.strip(),
+                            "categoria": self.categorize_transaction(desc),
+                            "parcela": None,
+                            "valor": valor,
+                            "extraction_method": "Generic"
+                        })
+                    except Exception as e:
+                        logging.debug(f"Generic extract error line '{line}': {e}")
+                        
+        return transactions
+
     def process_pdf(self, pdf_path, use_ocr=False):
         filename = os.path.basename(pdf_path)
         logging.info(f"Iniciando processamento (TEXT): {filename}")
@@ -440,6 +549,26 @@ class InvoiceProcessor:
         except Exception as e:
             logging.error(f"Erro ao processar {filename}: {str(e)}")
             return None
+
+        # Fallback para Extração Genérica se o método Itaú falhar
+        if not transactions or header_info["valor_total_declarado"] == 0:
+            logging.info(f"Falha na extração padrão Itaú para {filename}. Tentando método Genérico.")
+            try:
+                # Se page_texts estiver vazio (ex: erro no loop principal), tentar ler novamente
+                if not page_texts:
+                    with pdfplumber.open(pdf_path) as pdf:
+                        page_texts = [p.extract_text() or "" for p in pdf.pages]
+
+                if page_texts:
+                    # Tentar extrair header genérico da primeira página
+                    header_info = self.extract_generic_header(page_texts[0])
+                    # Tentar extrair transações de todas as páginas
+                    transactions = self.extract_generic_transactions(page_texts, filename, header_info)
+                    
+                    if transactions:
+                        logging.info(f"Extração Genérica: Encontradas {len(transactions)} transações.")
+            except Exception as e:
+                logging.error(f"Erro no fallback genérico: {e}")
 
         df = pd.DataFrame(transactions)
         
