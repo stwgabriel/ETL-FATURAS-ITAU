@@ -1,7 +1,7 @@
 services:
   - type: web
     name: etl-faturas-itau
-    env: python
+    runtime: python
     region: oregon
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn src.api:app --host 0.0.0.0 --port $PORT
