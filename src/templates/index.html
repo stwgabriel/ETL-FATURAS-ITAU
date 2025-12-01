@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="pt-BR" class="">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nexus Invoice Analytics</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link
+        href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@300;400;600;700&display=swap"
+        rel="stylesheet">
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        cyber: {
+                            black: '#0a0a0a',
+                            dark: '#111111',
+                            gray: '#1f1f1f',
+                            slate: '#2d2d2d',
+                            primary: '#00f0ff', // Neon Cyan (Dark Mode)
+                            primaryDark: '#0891b2', // Cyan-600 (Light Mode)
+                            secondary: '#7000ff', // Purple
+                            accent: '#ff003c', // Red/Pink
+                            success: '#00ff9f',
+                        }
+                    },
+                    boxShadow: {
+                        'neon-blue': '0 0 10px rgba(0, 240, 255, 0.5), 0 0 20px rgba(0, 240, 255, 0.3)',
+                        'neon-purple': '0 0 10px rgba(112, 0, 255, 0.5), 0 0 20px rgba(112, 0, 255, 0.3)',
+                        'light-card': '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        /* Base Styles */
+        body {
+            transition: background-color 0.3s, color 0.3s;
+        }
+
+        /* Dark Mode Styles */
+        html.dark body {
+            background-color: #050505;
+            background-image:
+                linear-gradient(rgba(0, 240, 255, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0, 240, 255, 0.03) 1px, transparent 1px);
+            background-size: 40px 40px;
+            color: #e0e0e0;
+        }
+
+        /* Light Mode Styles */
+        html:not(.dark) body {
+            background-color: #f3f4f6;
+            background-image:
+                linear-gradient(rgba(0, 0, 0, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0, 0, 0, 0.03) 1px, transparent 1px);
+            background-size: 40px 40px;
+            color: #1f2937;
+        }
+
+        /* Glass Panel - Adaptive */
+        .glass-panel {
+            transition: background 0.3s, border 0.3s, box-shadow 0.3s;
+            backdrop-filter: blur(10px);
+        }
+
+        html.dark .glass-panel {
+            background: rgba(20, 20, 20, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        html:not(.dark) .glass-panel {
+            background: rgba(255, 255, 255, 0.8);
+            border: 1px solid rgba(0, 0, 0, 0.05);
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+        }
+
+        .loading-scan {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 4px;
+            background: #00f0ff;
+            box-shadow: 0 0 15px #00f0ff;
+            animation: scan 2s linear infinite;
+            display: none;
+        }
+
+        html:not(.dark) .loading-scan {
+            background: #0891b2;
+            box-shadow: 0 0 15px rgba(8, 145, 178, 0.5);
+        }
+
+        @keyframes scan {
+            0% {
+                top: 0;
+                opacity: 0;
+            }
+
+            10% {
+                opacity: 1;
+            }
+
+            90% {
+                opacity: 1;
+            }
+
+            100% {
+                top: 100%;
+                opacity: 0;
+            }
+        }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        html.dark ::-webkit-scrollbar-track {
+            background: #111;
+        }
+
+        html.dark ::-webkit-scrollbar-thumb {
+            background: #333;
+            border-radius: 4px;
+        }
+
+        html.dark ::-webkit-scrollbar-thumb:hover {
+            background: #00f0ff;
+        }
+
+        html:not(.dark) ::-webkit-scrollbar-track {
+            background: #e5e7eb;
+        }
+
+        html:not(.dark) ::-webkit-scrollbar-thumb {
+            background: #9ca3af;
+            border-radius: 4px;
+        }
+
+        html:not(.dark) ::-webkit-scrollbar-thumb:hover {
+            background: #0891b2;
+        }
+    </style>
+</head>
+
+<body class="min-h-screen flex flex-col font-sans selection:bg-cyber-primary selection:text-cyber-black">
+
+    <!-- Theme Toggle (Floating) -->
+    <button id="themeToggle"
+        class="fixed top-4 right-4 z-50 p-2 rounded-full bg-white/90 dark:bg-cyber-black/90 border border-gray-200 dark:border-cyber-gray shadow-lg dark:shadow-neon-blue text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-all focus:outline-none backdrop-blur-md">
+        <!-- Sun Icon (for Dark Mode) -->
+        <svg id="iconSun" class="w-5 h-5 hidden dark:block" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z">
+            </path>
+        </svg>
+        <!-- Moon Icon (for Light Mode) -->
+        <svg id="iconMoon" class="w-5 h-5 block dark:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M20.354 24.043A9 9 0 0021 12a9 9 0 10-6.156 6.156 8.97 8.97 0 00-1.69 5.888z"
+                transform="rotate(-25 12 12)"></path>
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"></path>
+        </svg>
+    </button>
+
+    <!-- Main Content -->
+    <main class="flex-grow container mx-auto px-4 py-8 max-w-7xl relative">
+
+        <!-- Upload Section -->
+        <div
+            class="mb-12 glass-panel rounded-xl p-8 text-center relative overflow-hidden group transition-all duration-500 hover:shadow-lg dark:hover:shadow-neon-blue border border-gray-200 dark:border-cyber-gray">
+            <div
+                class="absolute inset-0 bg-gradient-to-r from-cyber-primaryDark/5 to-cyber-secondary/5 dark:from-cyber-primary/5 dark:to-cyber-secondary/5 opacity-0 group-hover:opacity-100 transition-opacity duration-500">
+            </div>
+
+            <h2 class="text-3xl font-bold mb-2 text-gray-900 dark:text-white">Central de Processamento de Faturas</h2>
+            <p class="text-gray-500 dark:text-gray-400 mb-8 font-mono text-sm">Envie faturas em PDF para extração
+                avançada e telemetria</p>
+
+            <div class="flex flex-col items-center justify-center">
+                <label for="fileInput"
+                    class="cursor-pointer flex flex-col items-center justify-center w-full max-w-2xl h-48 border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg hover:border-cyber-primaryDark dark:hover:border-cyber-primary hover:bg-gray-50 dark:hover:bg-cyber-primary/5 transition-all duration-300 relative overflow-hidden">
+                    <div class="flex flex-col items-center justify-center pt-5 pb-6 z-10">
+                        <svg class="w-12 h-12 mb-4 text-gray-400 group-hover:text-cyber-primaryDark dark:group-hover:text-cyber-primary transition-colors"
+                            fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12">
+                            </path>
+                        </svg>
+                        <p class="mb-2 text-sm text-gray-500 dark:text-gray-400 font-mono"><span
+                                class="font-bold text-cyber-primaryDark dark:text-cyber-primary">Clique para
+                                enviar</span>
+                            ou arraste e solte</p>
+                        <p class="text-xs text-gray-400 dark:text-gray-500">Apenas arquivos PDF (Criptografados ou
+                            Padrão)</p>
+                    </div>
+                    <input id="fileInput" type="file" class="hidden" accept=".pdf" />
+                    <div id="scanLine" class="loading-scan"></div>
+                </label>
+            </div>
+        </div>
+
+        <!-- Results Section -->
+        <div id="resultsArea" class="hidden space-y-8 opacity-0 transition-opacity duration-700">
+
+            <!-- Header & Actions -->
+            <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                <div>
+                    <h3 class="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
+                        <span class="text-cyber-primaryDark dark:text-cyber-primary">///</span> RELATÓRIO DE ANÁLISE
+                    </h3>
+                    <p class="text-gray-500 dark:text-gray-400 font-mono text-xs mt-1" id="fileNameDisplay">ARQUIVO:
+                        DESCONHECIDO</p>
+                </div>
+                <button id="exportBtn"
+                    class="px-6 py-2 bg-white dark:bg-cyber-gray hover:bg-gray-50 dark:hover:bg-cyber-primary dark:hover:text-black text-cyber-primaryDark dark:text-cyber-primary border border-cyber-primaryDark dark:border-cyber-primary rounded font-mono text-sm transition-all duration-300 shadow-sm dark:shadow-neon-blue flex items-center gap-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                    </svg>
+                    EXPORTAR DADOS.CSV
+                </button>
+            </div>
+
+            <!-- Alerts Area -->
+            <div id="alertContainer" class="hidden">
+                <!-- Populated by JS -->
+            </div>
+
+            <!-- Key Metrics Grid -->
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                <!-- Total Declarado -->
+                <div
+                    class="glass-panel p-5 rounded-lg border-l-2 border-cyber-primaryDark dark:border-cyber-primary relative overflow-hidden">
+                    <div class="absolute top-0 right-0 p-2 opacity-10 dark:opacity-20"><svg
+                            class="w-12 h-12 text-cyber-primaryDark dark:text-cyber-primary" fill="none"
+                            stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z">
+                            </path>
+                        </svg></div>
+                    <h4 class="text-xs font-mono text-gray-500 dark:text-gray-400 uppercase tracking-wider">Total
+                        Declarado</h4>
+                    <p class="text-2xl font-bold text-gray-900 dark:text-white mt-1 font-mono" id="totalDeclarado">R$
+                        0,00</p>
+                    <div class="mt-2 text-xs text-green-600 dark:text-cyber-success font-mono flex items-center gap-1">
+                        <span class="w-1.5 h-1.5 bg-green-600 dark:bg-cyber-success rounded-full animate-pulse"></span>
+                        VERIFICADO
+                    </div>
+                </div>
+
+                <!-- Total IOF -->
+                <div class="glass-panel p-5 rounded-lg border-l-2 border-cyber-accent relative overflow-hidden">
+                    <div class="absolute top-0 right-0 p-2 opacity-10 dark:opacity-20"><svg
+                            class="w-12 h-12 text-cyber-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg></div>
+                    <h4 class="text-xs font-mono text-gray-500 dark:text-gray-400 uppercase tracking-wider">Total IOF
+                        (Imposto)</h4>
+                    <p class="text-2xl font-bold text-gray-900 dark:text-white mt-1 font-mono" id="totalIOF">R$ 0,00</p>
+                    <div class="mt-2 text-xs text-gray-500 font-mono">Imposto Federal</div>
+                </div>
+
+                <!-- Total Internacional -->
+                <div class="glass-panel p-5 rounded-lg border-l-2 border-cyber-secondary relative overflow-hidden">
+                    <div class="absolute top-0 right-0 p-2 opacity-10 dark:opacity-20"><svg
+                            class="w-12 h-12 text-cyber-secondary" fill="none" stroke="currentColor"
+                            viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z">
+                            </path>
+                        </svg></div>
+                    <h4 class="text-xs font-mono text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                        Internacional</h4>
+                    <p class="text-2xl font-bold text-gray-900 dark:text-white mt-1 font-mono" id="totalInternacional">
+                        R$ 0,00</p>
+                    <div class="mt-2 text-xs text-gray-500 font-mono">Moeda Estrangeira</div>
+                </div>
+
+                <!-- Taxas e Serviços -->
+                <div class="glass-panel p-5 rounded-lg border-l-2 border-yellow-500 relative overflow-hidden">
+                    <div class="absolute top-0 right-0 p-2 opacity-10 dark:opacity-20"><svg
+                            class="w-12 h-12 text-yellow-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg></div>
+                    <h4 class="text-xs font-mono text-gray-500 dark:text-gray-400 uppercase tracking-wider">Taxas /
+                        Juros</h4>
+                    <p class="text-2xl font-bold text-gray-900 dark:text-white mt-1 font-mono" id="totalTaxas">R$ 0,00
+                    </p>
+                    <div class="mt-2 text-xs text-gray-500 font-mono">Tarifas Bancárias</div>
+                </div>
+            </div>
+
+            <!-- Charts Section -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <!-- Category Distribution -->
+                <div class="glass-panel p-6 rounded-xl lg:col-span-2">
+                    <h3
+                        class="text-lg font-bold text-gray-900 dark:text-white mb-4 font-mono border-b border-gray-200 dark:border-gray-800 pb-2">
+                        DISTRIBUIÇÃO POR CATEGORIA</h3>
+                    <div class="h-64 w-full">
+                        <canvas id="categoryChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Card Holders -->
+                <div class="glass-panel p-6 rounded-xl">
+                    <h3
+                        class="text-lg font-bold text-gray-900 dark:text-white mb-4 font-mono border-b border-gray-200 dark:border-gray-800 pb-2">
+                        MÉTRICAS DOS TITULARES</h3>
+                    <div class="h-64 w-full flex items-center justify-center">
+                        <canvas id="holderChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Detailed Table -->
+            <div class="glass-panel rounded-xl overflow-hidden border border-gray-200 dark:border-gray-800">
+                <div
+                    class="p-4 border-b border-gray-200 dark:border-gray-800 flex justify-between items-center bg-gray-50 dark:bg-cyber-dark transition-colors duration-300">
+                    <h3 class="text-lg font-bold text-gray-900 dark:text-white font-mono">REGISTRO DE TRANSAÇÕES</h3>
+                    <div class="relative">
+                        <input type="text" id="searchInput" placeholder="BUSCAR..."
+                            class="bg-white dark:bg-black/50 border border-gray-300 dark:border-gray-700 text-gray-900 dark:text-white text-xs rounded-full px-4 py-1.5 focus:outline-none focus:border-cyber-primaryDark dark:focus:border-cyber-primary w-48 font-mono transition-colors">
+                    </div>
+                </div>
+                <div class="overflow-x-auto max-h-[600px]">
+                    <table class="w-full text-left text-sm">
+                        <thead
+                            class="bg-gray-100 dark:bg-cyber-gray text-gray-600 dark:text-gray-400 font-mono text-xs uppercase sticky top-0 z-10 transition-colors duration-300">
+                            <tr>
+                                <th class="px-6 py-3">Data</th>
+                                <th class="px-6 py-3">Estabelecimento</th>
+                                <th class="px-6 py-3">Categoria</th>
+                                <th class="px-6 py-3">Cartão</th>
+                                <th class="px-6 py-3 text-center">Parc.</th>
+                                <th class="px-6 py-3 text-center">Intl</th>
+                                <th class="px-6 py-3 text-right">Valor (R$)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="transactionsBody"
+                            class="divide-y divide-gray-200 dark:divide-gray-800 text-gray-700 dark:text-gray-300 bg-white dark:bg-transparent transition-colors duration-300">
+                            <!-- Rows inserted via JS -->
+                        </tbody>
+                        <tfoot id="transactionsFooter"
+                            class="bg-gray-50 dark:bg-cyber-gray/50 font-bold text-gray-900 dark:text-white transition-colors duration-300">
+                            <!-- Totals inserted via JS -->
+                        </tfoot>
+                    </table>
+                </div>
+            </div>
+
+        </div>
+    </main>
+
+    <footer
+        class="border-t border-gray-200 dark:border-cyber-gray bg-white dark:bg-cyber-black py-6 mt-12 transition-colors duration-300">
+        <div class="container mx-auto px-4 text-center">
+            <p class="text-gray-500 dark:text-gray-600 text-xs font-mono">NEXUS ANALYTICS // VERSÃO DO SISTEMA 2.0.5 //
+                CONEXÃO SEGURA</p>
+        </div>
+    </footer>
+
+    <script>
+        // Theme Management
+        const html = document.documentElement;
+        const themeToggle = document.getElementById('themeToggle');
+
+        // Default to light mode if no preference
+        const savedTheme = localStorage.getItem('theme') || 'light';
+        if (savedTheme === 'dark') {
+            html.classList.add('dark');
+        } else {
+            html.classList.remove('dark');
+        }
+
+        themeToggle.addEventListener('click', () => {
+            html.classList.toggle('dark');
+            const isDark = html.classList.contains('dark');
+            localStorage.setItem('theme', isDark ? 'dark' : 'light');
+            updateChartTheme();
+        });
+
+        // Chart Configuration
+        Chart.defaults.font.family = "'JetBrains Mono', monospace";
+
+        function updateChartTheme() {
+            const isDark = html.classList.contains('dark');
+            const textColor = isDark ? '#888' : '#4b5563';
+            const gridColor = isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)';
+
+            Chart.defaults.color = textColor;
+            Chart.defaults.borderColor = gridColor;
+
+            // Re-render charts if data exists
+            if (window.latestStats) {
+                renderCharts(window.latestStats);
+            }
+        }
+
+        // Initialize chart theme
+        updateChartTheme();
+
+        let currentTransactions = [];
+        let currentFilename = "data";
+        let charts = {};
+
+        const fileInput = document.getElementById('fileInput');
+        const resultsArea = document.getElementById('resultsArea');
+        const scanLine = document.getElementById('scanLine');
+        const searchInput = document.getElementById('searchInput');
+
+        // Format Currency
+        const formatCurrency = (value) => {
+            return new Intl.NumberFormat('pt-BR', {
+                style: 'currency',
+                currency: 'BRL'
+            }).format(value);
+        };
+
+        // Handle File Upload
+        fileInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            // UI Loading State
+            scanLine.style.display = 'block';
+            resultsArea.classList.add('hidden');
+            resultsArea.classList.remove('opacity-100');
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const response = await fetch('/api/extract', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) throw new Error('Falha no processamento');
+
+                const data = await response.json();
+
+                // Render Data
+                renderDashboard(data);
+
+                // Show Results
+                resultsArea.classList.remove('hidden');
+                // Small delay for fade in
+                setTimeout(() => {
+                    resultsArea.classList.add('opacity-100');
+                }, 50);
+
+            } catch (error) {
+                console.error(error);
+                alert('Erro ao processar fatura: ' + error.message);
+            } finally {
+                scanLine.style.display = 'none';
+            }
+        });
+
+        function renderDashboard(data) {
+            const stats = data.statistics;
+            window.latestStats = stats; // Store for theme toggle re-render
+            currentTransactions = data.transactions;
+            currentFilename = data.filename.replace('.pdf', '');
+
+            // Update Header
+            document.getElementById('fileNameDisplay').textContent = `ARQUIVO: ${data.filename}`;
+
+            // Alerts
+            const alertContainer = document.getElementById('alertContainer');
+            if (stats.status !== 'OK' || Math.abs(stats.diferenca) > 0.01) {
+                alertContainer.className = 'mb-6 p-4 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-400 flex items-center gap-3 transition-all duration-300';
+                alertContainer.innerHTML = `
+                    <svg class="w-6 h-6 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                    </svg>
+                    <div>
+                        <p class="font-bold">DISCREPÂNCIA DE EXTRAÇÃO DETECTADA</p>
+                        <p class="text-sm font-mono mt-1">Dif: ${formatCurrency(stats.diferenca)} (Declarado: ${formatCurrency(stats.total_declarado)} vs Extraído: ${formatCurrency(stats.total_extraido)})</p>
+                    </div>
+                `;
+                alertContainer.classList.remove('hidden');
+            } else {
+                alertContainer.classList.add('hidden');
+            }
+
+            // Update Cards
+            animateValue("totalDeclarado", stats.total_declarado);
+            animateValue("totalIOF", stats.total_iof);
+            animateValue("totalInternacional", stats.total_internacional);
+            animateValue("totalTaxas", stats.total_taxas);
+
+            // Charts
+            renderCharts(stats);
+
+            // Table
+            renderTable(currentTransactions);
+        }
+
+        function animateValue(id, value) {
+            const el = document.getElementById(id);
+            const isDark = html.classList.contains('dark');
+            const highlightColor = isDark ? 'text-cyber-primary' : 'text-cyber-primaryDark';
+            const baseColor = isDark ? 'text-white' : 'text-gray-900';
+
+            el.textContent = formatCurrency(value);
+            // Simple flash effect
+            el.classList.remove(baseColor);
+            el.classList.add(highlightColor);
+            setTimeout(() => {
+                el.classList.remove(highlightColor);
+                el.classList.add(baseColor);
+            }, 500);
+        }
+
+        function renderCharts(stats) {
+            const isDark = html.classList.contains('dark');
+            const primaryColor = isDark ? '#00f0ff' : '#0891b2'; // Cyan vs Cyan-600
+            const primaryBg = isDark ? 'rgba(0, 240, 255, 0.5)' : 'rgba(8, 145, 178, 0.5)';
+            const gridColor = isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)';
+            const textColor = isDark ? '#888' : '#4b5563';
+
+            // Category Chart
+            const catCtx = document.getElementById('categoryChart').getContext('2d');
+            const catLabels = Object.keys(stats.por_categoria);
+            const catData = Object.values(stats.por_categoria);
+
+            if (charts.category) charts.category.destroy();
+
+            charts.category = new Chart(catCtx, {
+                type: 'bar',
+                data: {
+                    labels: catLabels,
+                    datasets: [{
+                        label: 'Gastos por Categoria',
+                        data: catData,
+                        backgroundColor: primaryBg,
+                        borderColor: primaryColor,
+                        borderWidth: 1,
+                        borderRadius: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false }
+                    },
+                    scales: {
+                        y: {
+                            grid: { color: gridColor },
+                            ticks: {
+                                callback: (val) => 'R$ ' + val,
+                                color: textColor
+                            }
+                        },
+                        x: {
+                            grid: { display: false },
+                            ticks: { color: textColor }
+                        }
+                    }
+                }
+            });
+
+            // Holder Chart (Doughnut)
+            const holderCtx = document.getElementById('holderChart').getContext('2d');
+            const holderLabels = Object.keys(stats.por_titular);
+            const holderData = Object.values(stats.por_titular);
+            const borderColor = isDark ? '#050505' : '#ffffff';
+
+            if (charts.holder) charts.holder.destroy();
+
+            charts.holder = new Chart(holderCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: holderLabels,
+                    datasets: [{
+                        data: holderData,
+                        backgroundColor: [
+                            isDark ? 'rgba(112, 0, 255, 0.7)' : 'rgba(124, 58, 237, 0.7)', // Purple
+                            isDark ? 'rgba(0, 240, 255, 0.7)' : 'rgba(8, 145, 178, 0.7)', // Cyan
+                            isDark ? 'rgba(255, 0, 60, 0.7)' : 'rgba(225, 29, 72, 0.7)', // Red
+                            isDark ? 'rgba(255, 255, 255, 0.7)' : 'rgba(107, 114, 128, 0.7)' // Gray
+                        ],
+                        borderColor: borderColor,
+                        borderWidth: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: {
+                                padding: 20,
+                                usePointStyle: true,
+                                color: textColor
+                            }
+                        }
+                    },
+                    cutout: '70%'
+                }
+            });
+        }
+
+        function renderTable(transactions) {
+            const tbody = document.getElementById('transactionsBody');
+            const tfoot = document.getElementById('transactionsFooter');
+            tbody.innerHTML = '';
+            tfoot.innerHTML = '';
+
+            transactions.forEach(t => {
+                const tr = document.createElement('tr');
+                tr.className = "hover:bg-gray-50 dark:hover:bg-white/5 transition-colors duration-200 group";
+
+                // Style helpers
+                const isIntl = t.internacional ? '<span class="text-cyber-secondary text-[10px] border border-cyber-secondary px-1 rounded">INTL</span>' : '';
+                const isIOF = (t.estabelecimento && t.estabelecimento.includes('IOF')) ? 'text-cyber-accent font-bold' : '';
+
+                tr.innerHTML = `
+                    <td class="px-6 py-4 font-mono text-xs text-gray-500 dark:text-gray-500 whitespace-nowrap">${t.data_transacao || '-'}</td>
+                    <td class="px-6 py-4 font-medium text-gray-900 dark:text-white ${isIOF}">${t.estabelecimento}</td>
+                    <td class="px-6 py-4 text-xs"><span class="px-2 py-1 rounded bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-700">${t.categoria}</span></td>
+                    <td class="px-6 py-4 text-xs text-gray-500 dark:text-gray-400 font-mono">...${t.final_cartao || 'XXXX'}</td>
+                    <td class="px-6 py-4 text-center text-xs text-gray-500">${t.parcela || '-'}</td>
+                    <td class="px-6 py-4 text-center">${isIntl}</td>
+                    <td class="px-6 py-4 text-right font-mono text-cyber-primaryDark dark:text-cyber-primary group-hover:text-black dark:group-hover:text-white transition-colors">${formatCurrency(t.valor)}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+
+            // Add Footer with Totals if stats are available
+            if (window.latestStats) {
+                const stats = window.latestStats;
+
+                // Row 1: Total Compras (Net)
+                const trNet = document.createElement('tr');
+                trNet.className = "text-gray-600 dark:text-gray-400";
+                trNet.innerHTML = `
+                    <td colspan="6" class="px-6 py-3 text-right font-mono text-xs uppercase">Total Transações (Sem Taxas):</td>
+                    <td class="px-6 py-3 text-right font-mono text-base">${formatCurrency(stats.total_compras)}</td>
+                `;
+                tfoot.appendChild(trNet);
+
+                // Row 2: Total Geral (Gross)
+                const trGross = document.createElement('tr');
+                trGross.className = "bg-gray-100 dark:bg-cyber-gray text-gray-900 dark:text-white border-t border-gray-200 dark:border-gray-700";
+                trGross.innerHTML = `
+                    <td colspan="6" class="px-6 py-4 text-right font-mono text-xs uppercase tracking-wider">Total Geral (Com Taxas):</td>
+                    <td class="px-6 py-4 text-right font-mono text-lg font-bold text-cyber-primaryDark dark:text-cyber-primary">${formatCurrency(stats.total_extraido)}</td>
+                `;
+                tfoot.appendChild(trGross);
+            }
+        }
+
+        // Search Functionality
+        searchInput.addEventListener('input', (e) => {
+            const term = e.target.value.toLowerCase();
+            const filtered = currentTransactions.filter(t =>
+                (t.estabelecimento && t.estabelecimento.toLowerCase().includes(term)) ||
+                (t.categoria && t.categoria.toLowerCase().includes(term)) ||
+                (t.titular_cartao && t.titular_cartao.toLowerCase().includes(term))
+            );
+            renderTable(filtered);
+        });
+
+        // Export CSV
+        document.getElementById('exportBtn').addEventListener('click', () => {
+            if (!currentTransactions.length) return;
+
+            const headers = ["Data", "Estabelecimento", "Categoria", "Valor", "Cartão", "Titular", "Parcela", "Internacional"];
+            const rows = currentTransactions.map(t => [
+                t.data_transacao,
+                `"${t.estabelecimento}"`, // Quote to handle commas
+                t.categoria,
+                t.valor.toString().replace('.', ','),
+                t.final_cartao,
+                t.titular_cartao,
+                t.parcela || '',
+                t.internacional ? 'Sim' : 'Não'
+            ]);
+
+            const csvContent = [
+                headers.join(';'),
+                ...rows.map(r => r.join(';'))
+            ].join('\n');
+
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.setAttribute('href', url);
+            link.setAttribute('download', `fatura_${currentFilename}_full.csv`);
+            link.style.visibility = 'hidden';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        });
+
+    </script>
+</body>
+
+</html>
