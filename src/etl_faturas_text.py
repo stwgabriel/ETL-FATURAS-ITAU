@@ -8,12 +8,25 @@ from datetime import datetime
 import shutil
 
 # Configuração de Logging
-logging.basicConfig(
-    filename='build/logs/etl_process_text.log',
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
+log_dir = 'build/logs'
+try:
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir, exist_ok=True)
+    
+    logging.basicConfig(
+        filename=os.path.join(log_dir, 'etl_process_text.log'),
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+except Exception as e:
+    # Fallback to console only if file logging fails (e.g. read-only filesystem)
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    print(f"Warning: Could not set up file logging: {e}")
 
 console = logging.StreamHandler()
 console.setLevel(logging.INFO)
