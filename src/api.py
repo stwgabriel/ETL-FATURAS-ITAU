@@ -26,6 +26,10 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 async def read_root(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
+@app.get("/info", response_class=HTMLResponse)
+async def read_info(request: Request):
+    return templates.TemplateResponse("docs.html", {"request": request})
+
 @app.post("/api/extract")
 async def extract_invoice(file: UploadFile = File(...)):
     if not file.filename.lower().endswith('.pdf'):

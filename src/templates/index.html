@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Nexus Invoice Analytics</title>
+    <title>ETL Faturas Itaú v1</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link
@@ -156,6 +156,15 @@
 </head>
 
 <body class="min-h-screen flex flex-col font-sans selection:bg-cyber-primary selection:text-cyber-black">
+
+    <!-- Info Button (Floating) -->
+    <a href="/info" title="Documentação Técnica"
+        class="fixed top-4 right-16 z-50 p-2 rounded-full bg-white/90 dark:bg-cyber-black/90 border border-gray-200 dark:border-cyber-gray shadow-lg dark:shadow-neon-purple text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-all focus:outline-none backdrop-blur-md flex items-center justify-center">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+        </svg>
+    </a>
 
     <!-- Theme Toggle (Floating) -->
     <button id="themeToggle"
