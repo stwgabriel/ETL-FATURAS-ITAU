@@ -58,7 +58,29 @@ class InvoiceProcessor:
         
     def extract_page_text(self, pdf_path, page_index, page_obj, use_ocr=False):
         # Force use_ocr to False regardless of argument in this version
-        return page_obj.extract_text() or ""
+        # Default extraction
+        text_raw = page_obj.extract_text(x_tolerance=1) or ""
+        
+        # Check if it's a candidate for 2-column split
+        # Heuristic: If width > 500 (e.g. A4 is 595) and we are processing typical invoice pages
+        if page_obj.width > 500:
+            # Based on analysis, the gap is between 340 and 367.
+            # Safe split point is around 355.
+            split_x = 355
+            
+            # Left Column
+            left_bbox = (0, 0, split_x, page_obj.height)
+            text_left = page_obj.crop(left_bbox).extract_text(x_tolerance=1) or ""
+            
+            # Right Column
+            right_bbox = (split_x, 0, page_obj.width, page_obj.height)
+            text_right = page_obj.crop(right_bbox).extract_text(x_tolerance=1) or ""
+            
+            # Concatenate
+            logging.debug(f"Page {page_index+1}: Applied 2-column split at x={split_x}")
+            return text_left + "\n" + text_right
+        
+        return text_raw
 
     def categorize_transaction(self, description):
         desc_upper = description.upper()
@@ -243,6 +265,7 @@ class InvoiceProcessor:
         
         current_card_holder = "Unknown"
         current_card_number = "Unknown"
+        current_card_is_international = False
         is_international_section = False
         ignore_section = False
         in_summary_section = False
@@ -255,6 +278,7 @@ class InvoiceProcessor:
         block_sum = 0.0
         block_ps_index = None
         card_subtotals = {}
+        closed_cards = set() # Track cards that have finished their current transactions section
         outros_agg = 0.0
         intern_trans_agg = 0.0
         intern_lanc_agg = 0.0
@@ -295,39 +319,7 @@ class InvoiceProcessor:
                     for line in lines:
                         line_norm = line.replace(" ", "").lower()
                         
-                        match_card_header = re.search(r'(?:^|\s)(?<!\d)(?:Lançamentos\s*no\s*cartão\s*)?([A-Z\s\.]+?)\(?final\s*(\d{4})\)?', line, re.IGNORECASE)
-                        if match_card_header:
-                            if block_card_number is not None and block_target is not None and block_ps_index is not None:
-                                try:
-                                    ps_val = transactions[block_ps_index]["valor"]
-                                    sum_without_ps = block_sum - ps_val
-                                    if abs(sum_without_ps - block_target) < abs(block_sum - block_target) - 0.001:
-                                        transactions.pop(block_ps_index)
-                                        block_sum = sum_without_ps
-                                        logging.info(f"Removido 'Produtos e serviços' do bloco {block_card_number} para reconciliar subtotal")
-                                except Exception as e:
-                                    logging.debug(f"Falha ao ajustar bloco {block_card_number}: {e}")
-                            candidate_name = match_card_header.group(1).strip()
-                            candidate_card = match_card_header.group(2)
-                            
-                            if "LANÇAMENTOS" in candidate_name.upper() or len(candidate_name) < 3:
-                                pass
-                            else:
-                                clean_name = re.sub(r'.*\d{2}/\d{2}.*?\d+[,.]\d+\s*', '', candidate_name)
-                                current_card_holder = clean_name.strip()
-                                current_card_number = candidate_card
-                                block_card_number = current_card_number
-                                m_sub = re.search(r'final\s*\d{4}[^\d]*(-?\s*(?:\d{1,3}(?:\.\d{3})*|\d+),\d{2})(?!\s*%)', line)
-                                block_target = self.parse_money(m_sub.group(1)) if m_sub else None
-                                block_sum = 0.0
-                                block_ps_index = None
-                                if block_target is not None:
-                                    card_subtotals[block_card_number] = block_target
-                                is_international_section = False
-                                seen_total_section_full = False 
-                                seen_total_section_partial = False
-                                logging.info(f"Novo bloco de cartão: {current_card_holder} (resetando seen_total_section)")
-
+                        # Context updates
                         if "lançamentos" in line_norm or "lancamentos" in line_norm or "transações" in line_norm or "transacoes" in line_norm or "minhasdespesas" in line_norm:
                             ignore_section = False
                             in_summary_section = False
@@ -340,44 +332,17 @@ class InvoiceProcessor:
                             logging.debug(f"Entrou em seção de resumo na página {page_num+1}: {line.strip()}")
 
                         current_line_is_total = False
-                        if ("lancamentosprodutoseservicos" in line_norm or "lançamentosprodutoseserviços" in line_norm):
-                            mv = re.search(r'(-?[\d\.,]+)(?!\s*%)', line)
-                            if mv:
-                                valor_ps = self.parse_money(mv.group(1))
-                                already_ps = any(
-                                    t.get("final_cartao") == current_card_number and t.get("estabelecimento") == "Produtos e serviços"
-                                    for t in transactions
-                                )
-                                if not already_ps:
-                                    transactions.append({
-                                        "arquivo": filename,
-                                        "data_emissao": header_info.get("data_emissao"),
-                                        "data_vencimento": header_info.get("data_vencimento"),
-                                        "valor_total_declarado": header_info.get("valor_total_declarado"),
-                                        "nome_cliente": header_info.get("nome_cliente"),
-                                        "cartao_principal": header_info.get("cartao_principal"),
-                                        "titular_cartao": current_card_holder,
-                                        "final_cartao": current_card_number,
-                                        "internacional": False,
-                                        "data_transacao": header_info.get("data_vencimento"),
-                                        "estabelecimento": "Produtos e serviços",
-                                        "categoria": "Outros",
-                                        "parcela": None,
-                                        "valor": valor_ps
-                                    })
+                        if "produtoseservicos" in line_norm or "produtoseserviços" in line_norm:
+                            # Reset international flags when entering this section
+                            is_international_section = False
+                            current_card_is_international = False
+                            logging.info(f"Entrou em seção de Produtos e Serviços (Reset International): {line.strip()}")
+                            # We do NOT add the header as a transaction to avoid duplication with the actual items inside the section.
 
                         if any(term in line_norm for term in [
-                            "preparamosoutrasopções",
-                            "opçõesdepagamento",
-                            "pagamentomínimo",
-                            "paguesuafatura",
-                            "limitesdecrédito",
-                            "simulação",
-                            "totaldoslançamentosatuais",
-                            "totalparapróximasfaturas",
-                            "lançamentosfuturos",
-                            "comprasparceladas",
-                            "demaisfaturas"
+                            "preparamosoutrasopções", "opçõesdepagamento", "pagamentomínimo", "paguesuafatura",
+                            "limitesdecrédito", "simulação", "totaldoslançamentosatuais", "totalparapróximasfaturas",
+                            "lançamentosfuturos", "comprasparceladas", "demaisfaturas", "parcelasfuturas"
                         ]):
                             ignore_section = True
                             if "totaldoslançamentosatuais" in line_norm:
@@ -391,8 +356,6 @@ class InvoiceProcessor:
                                     after_partial_total = True
                                     logging.info(f"Fim da seção de lançamentos (PARTIAL) detectado na página {page_num+1}")
                                 in_launches_section = False
-                                
-
                             logging.info(f"Iniciando seção ignorada na página {page_num+1}: {line.strip()}")
                         
                         if seen_total_section_full and not current_line_is_total:
@@ -422,75 +385,10 @@ class InvoiceProcessor:
                         if "Transações Internacionais" in line or "Lançamentos internacionais" in line:
                             is_international_section = True
 
-                        if "Saldofinanciado" in line or "Pagamento" in line or ("totalapagar" in line_norm):
-                            continue
-
-                        if not in_launches_section:
-                            continue
-
-                        matches = list(re.finditer(r'(\d{2}/\d{2})\s+(.*?)\s+(-?\s*(?:\d{1,3}(?:\.\d{3})*|\d+),\d{2})(?!\s*%)', line))
-                        
-                        if seen_total_section_partial and len(matches) > 1:
-                             logging.debug(f"Limitando matches em seção PARTIAL: {len(matches)} -> 1")
-                             matches = matches[:1]
-
-                        for match in matches:
-                            dt_str, desc, val_str = match.groups()
-                            desc = desc.strip()
-                            
-                            if not re.search(r'\d', val_str):
-                                continue
-                            
-                            val_str_clean = val_str.replace(" ", "")
-                            valor = self.parse_money(val_str_clean)
-                            
-                            if valor < 0 and ("PAGAMENTO" in desc.upper() or "DEBITO AUT" in desc.upper()):
-                                logging.info(f"Ignorando pagamento de fatura: {desc} {valor}")
-                                continue
-                            
-                            if current_line_is_total and abs(valor - header_info.get("valor_total_declarado", 0)) < 1.0:
-                                 continue
-
-                            parcela = None
-                            match_parc = re.search(r'(\d{2}/\d{2})$', desc)
-                            if match_parc:
-                                parcela = match_parc.group(1)
-
-                            data_transacao = dt_str
-                            is_future = False
-                            
-                            if header_info.get("data_vencimento"):
-                                try:
-                                    data_vencimento_dt = datetime.strptime(header_info["data_vencimento"], "%d/%m/%Y")
-                                    day, month = map(int, dt_str.split('/'))
-                                    year = data_vencimento_dt.year
-                                    
-                                    delta_month = month - data_vencimento_dt.month
-                                    
-                                    if delta_month > 0:
-                                        if delta_month < 6:
-                                            is_future = True
-                                        else:
-                                            year -= 1
-                                    elif delta_month == 0:
-                                        if day > data_vencimento_dt.day:
-                                            is_future = True
-                                    else:
-                                        pass
-                                    
-                                    if not is_future:
-                                        data_transacao_obj = datetime(year, month, day)
-                                        data_transacao = data_transacao_obj.strftime("%Y-%m-%d")
-                                        
-                                except ValueError:
-                                    pass
-                            
-                            if is_future:
-                                logging.debug(f"Ignorando transação futura: {dt_str} {desc}")
-                                continue
-
-                            is_iof = "IOF" in desc.upper()
-                            
+                        # Check for IOF Summary Line (International)
+                        m_iof_summary = re.search(r'Repasse\s*de\s*IOF\s*em\s*R\$\s*([\d\.,]+)', line, re.IGNORECASE)
+                        if m_iof_summary:
+                            valor_iof = self.parse_money(m_iof_summary.group(1))
                             transactions.append({
                                 "arquivo": filename,
                                 "data_emissao": header_info.get("data_emissao"),
@@ -500,53 +398,208 @@ class InvoiceProcessor:
                                 "cartao_principal": header_info.get("cartao_principal"),
                                 "titular_cartao": current_card_holder,
                                 "final_cartao": current_card_number,
-                                "internacional": is_international_section or is_iof,
-                                "data_transacao": data_transacao,
-                                "estabelecimento": desc,
-                                "categoria": self.categorize_transaction(desc),
-                                "parcela": parcela,
-                                "valor": valor
+                                "internacional": True,
+                                "data_transacao": header_info.get("data_vencimento"),
+                                "estabelecimento": "IOF Internacional (Resumo)",
+                                "categoria": "Financeiro",
+                                "parcela": None,
+                                "valor": valor_iof
                             })
-                            try:
-                                if block_card_number == current_card_number:
-                                    block_sum += valor
-                            except:
-                                pass
+                            logging.info(f"Capturado IOF de resumo: {valor_iof} para cartão {current_card_number}")
+                            continue
 
-                        if not matches:
-                            if "lancamentosprodutoseservicos" in line_norm or "lançamentosprodutoseserviços" in line_norm:
-                                m = re.search(r'(-?[\d\.,]+)(?!\s*%)', line)
-                                if m:
-                                    valor = self.parse_money(m.group(1))
-                                    already = any(
-                                        t.get("final_cartao") == current_card_number and t.get("estabelecimento") == "Produtos e serviços"
-                                        for t in transactions
-                                    )
-                                    if not already:
-                                        idx_ps = len(transactions)
-                                        transactions.append({
-                                            "arquivo": filename,
-                                            "data_emissao": header_info.get("data_emissao"),
-                                            "data_vencimento": header_info.get("data_vencimento"),
-                                            "valor_total_declarado": header_info.get("valor_total_declarado"),
-                                            "nome_cliente": header_info.get("nome_cliente"),
-                                            "cartao_principal": header_info.get("cartao_principal"),
-                                            "titular_cartao": current_card_holder,
-                                            "final_cartao": current_card_number,
-                                            "internacional": False,
-                                            "data_transacao": header_info.get("data_vencimento"),
-                                            "estabelecimento": "Produtos e serviços",
-                                            "categoria": "Outros",
-                                            "parcela": None,
-                                            "valor": valor
-                                        })
-                                        block_ps_index = idx_ps
-                                        try:
-                                            if block_card_number == current_card_number:
-                                                block_sum += valor
-                                                ps_total_agg += valor
-                                        except:
+                        if "Saldofinanciado" in line or "Pagamento" in line or ("totalapagar" in line_norm):
+                            continue
+
+                        # --- Positional Event Processing ---
+                        events = []
+
+                        # 1. Detect Card Summaries (Close Section)
+                        summary_matches = list(re.finditer(r'Lançamentos\s*no\s*cart.o\s*\(?final\s*(\d{4})\)?', line, re.IGNORECASE))
+                        for match in summary_matches:
+                            events.append({'type': 'card_summary', 'start': match.start(), 'match': match})
+
+                        # 2. Detect Card Switches
+                        # Improved regex to handle accents in "cartão"
+                        card_matches = list(re.finditer(r'(?:(?:Lançamentos\s*no\s*cart.o\s*)|(?:^|\s))([A-Z\s\.]+?)\(?final\s*(\d{4})\)?', line, re.IGNORECASE))
+                        for match in card_matches:
+                            # Avoid adding a card switch event if it overlaps with a summary event (which takes precedence)
+                            # Summary regex is more specific.
+                            is_summary = False
+                            for s_evt in events:
+                                if s_evt['type'] == 'card_summary' and abs(s_evt['start'] - match.start()) < 5:
+                                    is_summary = True
+                                    break
+                            if not is_summary:
+                                events.append({'type': 'card_switch', 'start': match.start(), 'match': match})
+
+                        # 3. Detect Transactions
+                        if in_launches_section:
+                            trans_matches = list(re.finditer(r'(\d{2}/\d{2})\s+(.*?)\s+(-?\s*(?:\d{1,3}(?:\.\d{3})*|\d+),\d{2})(?!\s*%)', line))
+                            
+                            if seen_total_section_partial and len(trans_matches) > 1:
+                                logging.debug(f"Limitando matches em seção PARTIAL: {len(trans_matches)} -> 1")
+                                trans_matches = trans_matches[:1]
+
+                            for match in trans_matches:
+                                events.append({'type': 'transaction', 'start': match.start(), 'match': match})
+
+                        # Sort by position
+                        events.sort(key=lambda x: x['start'])
+                        
+                        processed_trans_count = 0
+
+                        for event in events:
+                            if event['type'] == 'card_summary':
+                                match = event['match']
+                                card_to_close = match.group(1)
+                                closed_cards.add(card_to_close)
+                                logging.info(f"Fechando seção para cartão: {card_to_close}")
+                                
+                            elif event['type'] == 'card_switch':
+                                match = event['match']
+                                candidate_name = match.group(1).strip()
+                                candidate_card = match.group(2)
+                                
+                                if candidate_card in closed_cards:
+                                    if is_international_section:
+                                        logging.info(f"Reabrindo cartão {candidate_card} para seção internacional")
+                                    else:
+                                        logging.info(f"Ignorando cabeçalho para cartão já fechado: {candidate_card}")
+                                        continue
+
+                                # Ignora se for apenas um texto de resumo/total como "Lançamentos no cartão"
+                                # Mas aceita se tiver um nome antes, ex: "GISELE P SAMPAIO (final 2709)"
+                                if ("LANÇAMENTOS" in candidate_name.upper() or "CARTÃO" in candidate_name.upper()) and len(candidate_name) < 25:
+                                    pass
+                                elif len(candidate_name) < 2:
+                                    pass
+                                else:
+                                    # Limpeza de prefixos ruidosos
+                                    clean_name = re.sub(r'^.*[:;,]\s*', '', candidate_name)
+                                    clean_name = re.sub(r'.*\d{2}/\d{2}.*?\d+[,.]\d+\s*', '', clean_name)
+                                    
+                                    if len(clean_name) > 2:
+                                        # Fechar bloco anterior
+                                        if block_card_number is not None and block_target is not None and block_ps_index is not None:
+                                            try:
+                                                ps_val = transactions[block_ps_index]["valor"]
+                                                sum_without_ps = block_sum - ps_val
+                                                if abs(sum_without_ps - block_target) < abs(block_sum - block_target) - 0.001:
+                                                    transactions.pop(block_ps_index)
+                                                    block_sum = sum_without_ps
+                                                    logging.info(f"Removido 'Produtos e serviços' do bloco {block_card_number} para reconciliar subtotal")
+                                            except Exception as e:
+                                                logging.debug(f"Falha ao ajustar bloco {block_card_number}: {e}")
+
+                                        current_card_holder = clean_name.strip()
+                                        current_card_number = candidate_card
+                                        block_card_number = current_card_number
+                                        
+                                        block_target = None
+                                        block_sum = 0.0
+                                        block_ps_index = None
+                                        
+                                        # Tenta capturar subtotal se a linha tiver formato de totalizador para ESTE cartão
+                                        m_sub = re.search(r'final\s*' + candidate_card + r'[^\d]*(-?\s*(?:\d{1,3}(?:\.\d{3})*|\d+),\d{2})(?!\s*%)', line)
+                                        if m_sub:
+                                            block_target = self.parse_money(m_sub.group(1))
+                                            card_subtotals[block_card_number] = block_target
+
+                                        if is_international_section:
+                                            current_card_is_international = True
+                                            is_international_section = False
+                                        else:
+                                            current_card_is_international = False
+
+                                        seen_total_section_full = False 
+                                        seen_total_section_partial = False
+                                        logging.info(f"Novo bloco de cartão detectado: {current_card_holder} - {current_card_number}")
+
+                            elif event['type'] == 'transaction':
+                                match = event['match']
+                                processed_trans_count += 1
+                                dt_str, desc, val_str = match.groups()
+                                desc = desc.strip()
+                                
+                                if not re.search(r'\d', val_str):
+                                    continue
+                                
+                                val_str_clean = val_str.replace(" ", "")
+                                valor = self.parse_money(val_str_clean)
+                                
+                                if valor < 0 and ("PAGAMENTO" in desc.upper() or "DEBITO AUT" in desc.upper()):
+                                    logging.info(f"Ignorando pagamento de fatura: {desc} {valor}")
+                                    continue
+                                
+                                if current_line_is_total and abs(valor - header_info.get("valor_total_declarado", 0)) < 1.0:
+                                     continue
+
+                                parcela = None
+                                match_parc = re.search(r'(\d{2}/\d{2})$', desc)
+                                if match_parc:
+                                    parcela = match_parc.group(1)
+
+                                data_transacao = dt_str
+                                is_future = False
+                                
+                                if header_info.get("data_vencimento"):
+                                    try:
+                                        data_vencimento_dt = datetime.strptime(header_info["data_vencimento"], "%d/%m/%Y")
+                                        day, month = map(int, dt_str.split('/'))
+                                        year = data_vencimento_dt.year
+                                        
+                                        delta_month = month - data_vencimento_dt.month
+                                        
+                                        if delta_month > 0:
+                                            if delta_month < 6:
+                                                is_future = True
+                                            else:
+                                                year -= 1
+                                        elif delta_month == 0:
+                                            if day > data_vencimento_dt.day:
+                                                is_future = True
+                                        else:
                                             pass
+                                        
+                                        if not is_future:
+                                            data_transacao_obj = datetime(year, month, day)
+                                            data_transacao = data_transacao_obj.strftime("%Y-%m-%d")
+                                            
+                                    except ValueError:
+                                        pass
+                                
+                                if is_future:
+                                    logging.debug(f"Ignorando transação futura: {dt_str} {desc}")
+                                    continue
+
+                                is_iof = "IOF" in desc.upper()
+                                
+                                transactions.append({
+                                    "arquivo": filename,
+                                    "data_emissao": header_info.get("data_emissao"),
+                                    "data_vencimento": header_info.get("data_vencimento"),
+                                    "valor_total_declarado": header_info.get("valor_total_declarado"),
+                                    "nome_cliente": header_info.get("nome_cliente"),
+                                    "cartao_principal": header_info.get("cartao_principal"),
+                                    "titular_cartao": current_card_holder,
+                                    "final_cartao": current_card_number,
+                                    "internacional": current_card_is_international or is_iof,
+                                    "data_transacao": data_transacao,
+                                    "estabelecimento": desc,
+                                    "categoria": self.categorize_transaction(desc),
+                                    "parcela": parcela,
+                                    "valor": valor
+                                })
+                                try:
+                                    if block_card_number == current_card_number:
+                                        block_sum += valor
+                                except:
+                                    pass
+
+                        # if processed_trans_count == 0:
+                        #     # Removed 'Produtos e serviços' header capture to avoid duplication
+                        #     pass
                         
 
             if block_card_number is not None and block_target is not None and block_ps_index is not None:
@@ -724,23 +777,38 @@ def run_etl():
     dirs = []
     if os.path.exists(base_path):
         dirs.append(base_path)
+    
+    # Add F folder support
+    if os.path.exists("F"):
+        dirs.append("F")
+    if os.path.exists("../F"):
+        dirs.append("../F")
+    if os.path.exists("../data/Faturas"):
+        dirs.append("../data/Faturas")
+
     alt_path = "data/Faturas"
-    if os.path.exists(alt_path):
+    if os.path.exists(alt_path) and alt_path not in dirs:
         dirs.append(alt_path)
+        
     if not dirs:
-        print("Diretórios não encontrados: data/Faturas")
+        print("Diretórios não encontrados: data/Faturas ou F")
         return
-    files = []
+        
+    files_map = {}
     for d in dirs:
-        files += [f for f in os.listdir(d) if f.lower().endswith('.pdf')]
-    files = sorted(set(files))
+        try:
+            for f in os.listdir(d):
+                if f.lower().endswith('.pdf'):
+                    files_map[f] = os.path.join(d, f)
+        except OSError as e:
+            print(f"Erro ao listar diretório {d}: {e}")
+
+    print(f"Iniciando processamento TEXT de {len(files_map)} arquivos...")
+    
     all_results = []
     master_df = pd.DataFrame()
     
-    print(f"Iniciando processamento TEXT de {len(files)} arquivos...")
-    
-    for f in files:
-        path = os.path.join(base_path if os.path.exists(os.path.join(base_path, f)) else alt_path, f)
+    for f, path in files_map.items():
         result = processor.process_pdf(path, use_ocr=False)
         if result:
             all_results.append(result)

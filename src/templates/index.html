@@ -636,24 +636,66 @@
             tbody.innerHTML = '';
             tfoot.innerHTML = '';
 
+            // Agrupar transações por cartão
+            const groupedTransactions = {};
             transactions.forEach(t => {
-                const tr = document.createElement('tr');
-                tr.className = "hover:bg-gray-50 dark:hover:bg-white/5 transition-colors duration-200 group";
+                const cardKey = `${t.titular_cartao || 'Desconhecido'} - Final ${t.final_cartao || 'XXXX'}`;
+                if (!groupedTransactions[cardKey]) {
+                    groupedTransactions[cardKey] = {
+                        transactions: [],
+                        total: 0
+                    };
+                }
+                groupedTransactions[cardKey].transactions.push(t);
+                groupedTransactions[cardKey].total += t.valor;
+            });
 
-                // Style helpers
-                const isIntl = t.internacional ? '<span class="text-cyber-secondary text-[10px] border border-cyber-secondary px-1 rounded">INTL</span>' : '';
-                const isIOF = (t.estabelecimento && t.estabelecimento.includes('IOF')) ? 'text-cyber-accent font-bold' : '';
+            // Ordenar chaves para consistência (opcional)
+            const sortedKeys = Object.keys(groupedTransactions).sort();
 
-                tr.innerHTML = `
-                    <td class="px-6 py-4 font-mono text-xs text-gray-500 dark:text-gray-500 whitespace-nowrap">${t.data_transacao || '-'}</td>
-                    <td class="px-6 py-4 font-medium text-gray-900 dark:text-white ${isIOF}">${t.estabelecimento}</td>
-                    <td class="px-6 py-4 text-xs"><span class="px-2 py-1 rounded bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-700">${t.categoria}</span></td>
-                    <td class="px-6 py-4 text-xs text-gray-500 dark:text-gray-400 font-mono">...${t.final_cartao || 'XXXX'}</td>
-                    <td class="px-6 py-4 text-center text-xs text-gray-500">${t.parcela || '-'}</td>
-                    <td class="px-6 py-4 text-center">${isIntl}</td>
-                    <td class="px-6 py-4 text-right font-mono text-cyber-primaryDark dark:text-cyber-primary group-hover:text-black dark:group-hover:text-white transition-colors">${formatCurrency(t.valor)}</td>
+            sortedKeys.forEach(key => {
+                const group = groupedTransactions[key];
+
+                // Cabeçalho do Grupo
+                const trHeader = document.createElement('tr');
+                trHeader.className = "bg-gray-100 dark:bg-cyber-gray/30 border-l-4 border-cyber-secondary";
+                trHeader.innerHTML = `
+                    <td colspan="7" class="px-6 py-3 font-bold text-sm text-gray-800 dark:text-gray-200 font-mono flex items-center gap-2">
+                        <svg class="w-4 h-4 text-cyber-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"></path></svg>
+                        ${key.toUpperCase()}
+                    </td>
                 `;
-                tbody.appendChild(tr);
+                tbody.appendChild(trHeader);
+
+                // Transações do Grupo
+                group.transactions.forEach(t => {
+                    const tr = document.createElement('tr');
+                    tr.className = "hover:bg-gray-50 dark:hover:bg-white/5 transition-colors duration-200 group border-b border-gray-100 dark:border-gray-800/50";
+
+                    // Style helpers
+                    const isIntl = t.internacional ? '<span class="text-cyber-secondary text-[10px] border border-cyber-secondary px-1 rounded">INTL</span>' : '';
+                    const isIOF = (t.estabelecimento && t.estabelecimento.includes('IOF')) ? 'text-cyber-accent font-bold' : '';
+
+                    tr.innerHTML = `
+                        <td class="px-6 py-4 font-mono text-xs text-gray-500 dark:text-gray-500 whitespace-nowrap pl-8">${t.data_transacao || '-'}</td>
+                        <td class="px-6 py-4 font-medium text-gray-900 dark:text-white ${isIOF}">${t.estabelecimento}</td>
+                        <td class="px-6 py-4 text-xs"><span class="px-2 py-1 rounded bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-700">${t.categoria}</span></td>
+                        <td class="px-6 py-4 text-xs text-gray-500 dark:text-gray-400 font-mono opacity-50">...${t.final_cartao || 'XXXX'}</td>
+                        <td class="px-6 py-4 text-center text-xs text-gray-500">${t.parcela || '-'}</td>
+                        <td class="px-6 py-4 text-center">${isIntl}</td>
+                        <td class="px-6 py-4 text-right font-mono text-cyber-primaryDark dark:text-cyber-primary group-hover:text-black dark:group-hover:text-white transition-colors">${formatCurrency(t.valor)}</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+
+                // Subtotal do Grupo
+                const trSubtotal = document.createElement('tr');
+                trSubtotal.className = "bg-gray-50 dark:bg-white/5 border-b border-gray-200 dark:border-gray-700";
+                trSubtotal.innerHTML = `
+                    <td colspan="6" class="px-6 py-3 text-right font-mono text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400">Subtotal (${key}):</td>
+                    <td class="px-6 py-3 text-right font-mono text-sm font-bold text-gray-900 dark:text-white border-t border-gray-300 dark:border-gray-600 border-dashed">${formatCurrency(group.total)}</td>
+                `;
+                tbody.appendChild(trSubtotal);
             });
 
             // Add Footer with Totals if stats are available
