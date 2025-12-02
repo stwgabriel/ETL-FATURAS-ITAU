@@ -59,7 +59,7 @@ class InvoiceProcessor:
     def extract_page_text(self, pdf_path, page_index, page_obj, use_ocr=False):
         # Force use_ocr to False regardless of argument in this version
         # Default extraction
-        text_raw = page_obj.extract_text(x_tolerance=1) or ""
+        # text_raw = page_obj.extract_text(x_tolerance=1) or ""
         
         # Check if it's a candidate for 2-column split
         # Heuristic: If width > 500 (e.g. A4 is 595) and we are processing typical invoice pages
@@ -70,17 +70,17 @@ class InvoiceProcessor:
             
             # Left Column
             left_bbox = (0, 0, split_x, page_obj.height)
-            text_left = page_obj.crop(left_bbox).extract_text(x_tolerance=1) or ""
+            text_left = page_obj.crop(left_bbox).extract_text(x_tolerance=3) or ""
             
             # Right Column
             right_bbox = (split_x, 0, page_obj.width, page_obj.height)
-            text_right = page_obj.crop(right_bbox).extract_text(x_tolerance=1) or ""
+            text_right = page_obj.crop(right_bbox).extract_text(x_tolerance=3) or ""
             
             # Concatenate
             logging.debug(f"Page {page_index+1}: Applied 2-column split at x={split_x}")
             return text_left + "\n" + text_right
         
-        return text_raw
+        return page_obj.extract_text(x_tolerance=3) or ""
 
     def categorize_transaction(self, description):
         desc_upper = description.upper()
@@ -92,7 +92,8 @@ class InvoiceProcessor:
 
     def parse_money(self, value_str):
         try:
-            clean_str = value_str.replace('.', '').replace(',', '.')
+            # Remove spaces first, then handle standard PT-BR formatting
+            clean_str = value_str.replace(' ', '').replace('.', '').replace(',', '.')
             return float(clean_str)
         except ValueError:
             return 0.0
@@ -106,22 +107,37 @@ class InvoiceProcessor:
             "cartao_principal": "UNKNOWN"
         }
         
-        re_total = re.search(r'Total\s*desta\s*fatura\s*([\d\.,]+)', text)
+        # Normaliza o texto removendo espaços para lidar com formatações estranhas
+        # Ex: "O tota l da sua fatu ra é" -> "ototaldasuafaturaé"
+        tnorm = text.replace(" ", "").lower()
+        
+        # 1. Tentativa direta no texto original (com suporte a espaços no valor)
+        re_total = re.search(r'Total\s*desta\s*fatura\s*([\d\.,\s]+)', text)
         
         if not re_total:
-             re_total = re.search(r'O total da sua fatura é:[\s\S]*?R\$\s*([\d\.,]+)', text)
+             re_total = re.search(r'O total da sua fatura é:[\s\S]*?R\$\s*([\d\.,\s]+)', text)
         
         if re_total:
             info["valor_total_declarado"] = self.parse_money(re_total.group(1))
         else:
-            tnorm = text.replace(" ", "").lower()
-            m = re.search(r'(?:l)?lançamentosatuais\s*([\d\.,]+)', tnorm)
+            # 2. Tentativas no texto normalizado (sem espaços)
+            m = None
+            # Padrão: totaldestafatura...
+            if not m:
+                m = re.search(r'totaldestafatura.*?([\d\.,]+)', tnorm)
+            # Padrão: ototaldasuafaturaé...R$
+            if not m:
+                m = re.search(r'ototaldasuafaturaé.*?r\$\s*([\d\.,]+)', tnorm)
+            # Padrões antigos de lançamentos
+            if not m:
+                m = re.search(r'(?:l)?lançamentosatuais\s*([\d\.,]+)', tnorm)
             if not m:
                 m = re.search(r'(?:l)?lancamentosatuais\s*([\d\.,]+)', tnorm)
             if not m:
                 m = re.search(r'totaldoslançamentosatuais\s*([\d\.,]+)', tnorm)
             if not m:
                 m = re.search(r'totaldoslancamentosatuais\s*([\d\.,]+)', tnorm)
+                
             if m:
                 info["valor_total_declarado"] = self.parse_money(m.group(1))
         
@@ -285,6 +301,8 @@ class InvoiceProcessor:
         pagamento_efetuado = 0.0
         ps_total_agg = 0.0
         
+        in_ps_section = False
+        
         try:
             with pdfplumber.open(pdf_path) as pdf:
                 if len(pdf.pages) > 0:
@@ -325,10 +343,14 @@ class InvoiceProcessor:
                             in_summary_section = False
                             in_launches_section = True
                             after_partial_total = False
+                            # If we were in PS section, and we see a generic "Lançamentos", we might be exiting it or re-confirming it.
+                            # Usually "Lançamentos: produtos e serviços" sets in_ps_section=True.
+                            # "Lançamentos: nacionais" or "Lançamentos no cartão X" will unset it via other checks.
                             logging.info(f"Reativando leitura na página {page_num+1}: {line.strip()}")
 
                         if any(term in line_norm for term in ["resumodafatura", "encargoscobrados", "demonstrativodeencargos", "resumodespesas"]):
                             in_summary_section = True
+                            in_ps_section = False
                             logging.debug(f"Entrou em seção de resumo na página {page_num+1}: {line.strip()}")
 
                         current_line_is_total = False
@@ -336,7 +358,15 @@ class InvoiceProcessor:
                             # Reset international flags when entering this section
                             is_international_section = False
                             current_card_is_international = False
-                            logging.info(f"Entrou em seção de Produtos e Serviços (Reset International): {line.strip()}")
+                            in_ps_section = True
+                            
+                            # Set context to Main Card for "Produtos e serviços"
+                            if header_info.get("cartao_principal") != "UNKNOWN":
+                                current_card_number = header_info["cartao_principal"][-4:]
+                            if header_info.get("nome_cliente") != "UNKNOWN":
+                                current_card_holder = header_info["nome_cliente"]
+                                
+                            logging.info(f"Entrou em seção de Produtos e Serviços (Reset International & Set Main Card): {line.strip()}")
                             # We do NOT add the header as a transaction to avoid duplication with the actual items inside the section.
 
                         if any(term in line_norm for term in [
@@ -345,6 +375,7 @@ class InvoiceProcessor:
                             "lançamentosfuturos", "comprasparceladas", "demaisfaturas", "parcelasfuturas"
                         ]):
                             ignore_section = True
+                            in_ps_section = False
                             if "totaldoslançamentosatuais" in line_norm:
                                 current_line_is_total = True
                                 match_idx = line_norm.find("totaldoslançamentosatuais")
@@ -475,6 +506,9 @@ class InvoiceProcessor:
                                 elif len(candidate_name) < 2:
                                     pass
                                 else:
+                                    # Exit PS section on card switch
+                                    in_ps_section = False
+                                    
                                     # Limpeza de prefixos ruidosos
                                     clean_name = re.sub(r'^.*[:;,]\s*', '', candidate_name)
                                     clean_name = re.sub(r'.*\d{2}/\d{2}.*?\d+[,.]\d+\s*', '', clean_name)
@@ -574,6 +608,10 @@ class InvoiceProcessor:
                                     continue
 
                                 is_iof = "IOF" in desc.upper()
+                                
+                                # Update Produtos e Serviços Total
+                                if in_ps_section:
+                                    ps_total_agg += valor
                                 
                                 transactions.append({
                                     "arquivo": filename,
