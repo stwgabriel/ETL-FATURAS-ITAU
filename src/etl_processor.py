@@ -215,7 +215,7 @@ class InvoiceProcessor:
     def reconcile_discrepancies(self, transactions: List[Dict], header_info: Dict, page_texts: List[str]) -> List[Dict]:
         """
         Attempts to fix discrepancies between declared total and extracted total
-        by searching for common missing charges (Encargos, IOF, etc.) in the summary text.
+        by searching for common missing charges (Encargos, IOF, etc.) or credits (Saldo Anterior, Descontos) in the summary text.
         """
         if not transactions:
             return transactions
@@ -236,51 +236,76 @@ class InvoiceProcessor:
         # Combine text from first few pages (summary usually on page 1 or 2)
         summary_text = "\n".join(page_texts[:3]) if page_texts else ""
         
-        # Potential missing charges to look for
-        patterns = [
-            (r'Encargos\s*(?:R\$)?\s*([\d\.,]+)', "Encargos de Financiamento"),
-            (r'IOF\s*(?:R\$)?\s*([\d\.,]+)', "IOF de Financiamento"),
-            (r'Juros\s*(?:R\$)?\s*([\d\.,]+)', "Juros"),
-            (r'Multa\s*(?:R\$)?\s*([\d\.,]+)', "Multa"),
-            (r'Tarifa\s*(?:R\$)?\s*([\d\.,]+)', "Tarifa")
-        ]
+        # Case 1: Missing Positive Charges (Diff > 0)
+        if diff > 0:
+            # Potential missing charges to look for
+            patterns = [
+                (r'Encargos\s*(?:R\$)?\s*([\d\.,]+)', "Encargos de Financiamento"),
+                (r'IOF\s*(?:R\$)?\s*([\d\.,]+)', "IOF de Financiamento"),
+                (r'Juros\s*(?:R\$)?\s*([\d\.,]+)', "Juros"),
+                (r'Multa\s*(?:R\$)?\s*([\d\.,]+)', "Multa"),
+                (r'Tarifa\s*(?:R\$)?\s*([\d\.,]+)', "Tarifa")
+            ]
+            
+            candidates = []
+            for pat, cat in patterns:
+                matches = re.finditer(pat, summary_text, re.IGNORECASE)
+                for m in matches:
+                    val_str = m.group(1)
+                    val = self.parse_money(val_str)
+                    if val > 0:
+                        candidates.append({'category': cat, 'value': val})
 
-        candidates = []
-        for pat, cat in patterns:
-            matches = re.finditer(pat, summary_text, re.IGNORECASE)
-            for m in matches:
-                val_str = m.group(1)
-                val = self.parse_money(val_str)
-                if val > 0:
-                    candidates.append({'category': cat, 'value': val})
+            # Strategy 1: Check if any single candidate matches the diff
+            for cand in candidates:
+                if abs(diff - cand['value']) < 0.05:
+                    if not self._is_duplicate(transactions, cand['value'], cand['category']):
+                        logging.info(f"Reconciliation: Found missing {cand['category']} of {cand['value']}")
+                        self._add_reconciled_transaction(transactions, header_info, cand['category'], cand['value'])
+                        return transactions
+            
+            # Strategy 2: Check combinations
+            unique_candidates = {f"{c['category']}_{c['value']}": c for c in candidates}.values()
+            for r in range(2, len(unique_candidates) + 1):
+                for combo in combinations(unique_candidates, r):
+                    combo_sum = sum(c['value'] for c in combo)
+                    if abs(diff - combo_sum) < 0.05:
+                        logging.info(f"Reconciliation: Found missing combination matching {diff:.2f}")
+                        for item in combo:
+                            if not self._is_duplicate(transactions, item['value'], item['category']):
+                                self._add_reconciled_transaction(transactions, header_info, item['category'], item['value'])
+                        return transactions
 
-        # Strategy 1: Check if any single candidate matches the diff
-        for cand in candidates:
-            if abs(diff - cand['value']) < 0.05:
-                # Check if already exists
-                if not self._is_duplicate(transactions, cand['value'], cand['category']):
-                    logging.info(f"Reconciliation: Found missing {cand['category']} of {cand['value']}")
-                    self._add_reconciled_transaction(transactions, header_info, cand['category'], cand['value'])
-                    return transactions
-
-        # Strategy 2: Check if sum of all candidates matches diff (e.g. Encargos + IOF)
-        # Filter candidates to avoid duplicates (e.g. Encargos might appear twice)
-        unique_candidates = {f"{c['category']}_{c['value']}": c for c in candidates}.values()
-        
-        # Try combinations of 2 or 3 items
-        for r in range(2, len(unique_candidates) + 1):
-            for combo in combinations(unique_candidates, r):
-                combo_sum = sum(c['value'] for c in combo)
-                if abs(diff - combo_sum) < 0.05:
-                    # Found a combination!
-                    logging.info(f"Reconciliation: Found missing combination matching {diff:.2f}")
-                    for item in combo:
-                        if not self._is_duplicate(transactions, item['value'], item['category']):
-                            self._add_reconciled_transaction(transactions, header_info, item['category'], item['value'])
-                    return transactions
-
-        # Strategy 3: Check for 'Saldo Anterior' or 'Pagamento' if diff is huge
-        # (Not implemented yet to avoid false positives)
+        # Case 2: Missing Credits/Discounts (Diff < 0)
+        elif diff < 0:
+            # We are looking for a credit that explains the negative difference
+            # The missing transaction should have a value of 'diff' (negative).
+            # But in the text, it might appear as positive (e.g. "Crédito: 100,00") or negative ("-100,00")
+            target_val = abs(diff)
+            
+            patterns = [
+                (r'Saldo\s*(?:Financiado|Anterior)\s*(?:R\$)?\s*(-?[\d\.,]+)', "Saldo Anterior"),
+                (r'Crédito\s*(?:R\$)?\s*(-?[\d\.,]+)', "Crédito Fatura"),
+                (r'Desconto\s*(?:R\$)?\s*(-?[\d\.,]+)', "Desconto"),
+                (r'Pagamento\s*(?:a\s*maior)?\s*(?:R\$)?\s*(-?[\d\.,]+)', "Pagamento Antecipado")
+            ]
+            
+            for pat, cat in patterns:
+                matches = re.finditer(pat, summary_text, re.IGNORECASE)
+                for m in matches:
+                    val_str = m.group(1)
+                    val = self.parse_money(val_str)
+                    # The extracted value might be positive (1099.00) or negative (-1099.00)
+                    # We check if abs(val) matches abs(diff)
+                    
+                    if abs(abs(val) - target_val) < 0.05:
+                        # Found it! We need to add a NEGATIVE transaction
+                        final_val = -abs(val) # Ensure it's negative
+                        
+                        if not self._is_duplicate(transactions, final_val, cat):
+                             logging.info(f"Reconciliation: Found missing credit {cat} of {final_val}")
+                             self._add_reconciled_transaction(transactions, header_info, cat, final_val)
+                             return transactions
 
         logging.warning(f"Reconciliation failed. Remaining Diff: {diff:.2f}")
         return transactions
@@ -381,6 +406,39 @@ class InvoiceProcessor:
                     first_page_text = self.extract_page_text(pdf.pages[0], 0)
                     header_info = self.extract_header_info(first_page_text)
                     
+                    # Check for Saldo Financiado / Previous Balance in Header text
+                    tnorm_hdr = first_page_text.replace(" ", "").lower()
+                    ms = re.search(r'(?:saldofinanciado|saldoanterior).*?(-?[\d\.,]+)', tnorm_hdr)
+                    if ms:
+                        saldo_financiado = self.parse_money(ms.group(1))
+                        if saldo_financiado != 0:
+                            # Determine date (use header info)
+                            dt_trans = header_info.get("data_vencimento")
+                            if dt_trans:
+                                try:
+                                    dt_obj = datetime.strptime(dt_trans, "%d/%m/%Y")
+                                    dt_trans = dt_obj.strftime("%Y-%m-%d")
+                                except:
+                                    pass
+                            
+                            transactions.append({
+                                "arquivo": filename,
+                                "data_emissao": header_info.get("data_emissao"),
+                                "data_vencimento": header_info.get("data_vencimento"),
+                                "valor_total_declarado": header_info.get("valor_total_declarado"),
+                                "nome_cliente": header_info.get("nome_cliente"),
+                                "cartao_principal": header_info.get("cartao_principal"),
+                                "titular_cartao": header_info.get("nome_cliente"),
+                                "final_cartao": header_info.get("cartao_principal")[-4:] if header_info.get("cartao_principal") != "UNKNOWN" else "XXXX",
+                                "internacional": False,
+                                "data_transacao": dt_trans,
+                                "estabelecimento": "Saldo Financiado Anterior",
+                                "categoria": "Financeiro",
+                                "parcela": None,
+                                "valor": saldo_financiado
+                            })
+                            logging.info(f"Extracted Saldo Financiado Anterior: {saldo_financiado}")
+
                     if header_info["nome_cliente"] != "UNKNOWN":
                         current_card_holder = header_info["nome_cliente"]
                     if header_info["cartao_principal"] != "UNKNOWN":
