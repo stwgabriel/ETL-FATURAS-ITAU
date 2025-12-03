@@ -7,7 +7,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import pandas as pd
-from src.etl_faturas_text import InvoiceProcessor
+from src.etl_processor import InvoiceProcessor
 
 # Configuração de logs
 logging.basicConfig(level=logging.INFO)
@@ -43,74 +43,81 @@ async def extract_invoice(file: UploadFile = File(...)):
             shutil.copyfileobj(file.file, buffer)
             
         # Processar
-        # Usamos um diretório de saída temporário para não poluir o build/output principal
-        # ou podemos usar o padrão. Vamos usar um temp para isolamento.
-        with tempfile.TemporaryDirectory() as temp_out_dir:
-            processor = InvoiceProcessor(output_dir=temp_out_dir)
-            result = processor.process_pdf(temp_file_path, use_ocr=False)
+        processor = InvoiceProcessor()
+        df = processor.process_pdf(temp_file_path)
+        
+        if df.empty:
+            raise HTTPException(status_code=500, detail="Falha ao processar PDF ou arquivo vazio")
             
-            if not result:
-                raise HTTPException(status_code=500, detail="Falha ao processar PDF")
-                
-            df = result['dataframe']
-            validation = result['validation']
-            
-            # Converter NaN para None para JSON válido
-            df_dict = df.where(pd.notnull(df), None).to_dict(orient='records')
-            
-            # Estatísticas para o dashboard
-            
-            # Convertendo colunas relevantes para numérico se necessário
-            df['valor'] = pd.to_numeric(df['valor'], errors='coerce').fillna(0.0)
-            
-            # Cálculos específicos
-            # IOF
-            iof_mask = df['estabelecimento'].str.contains('IOF', case=False, na=False)
-            total_iof = df[iof_mask]['valor'].sum()
-            
-            # Internacional (excluindo IOF se quiser separar, mas aqui vamos pegar tudo marcado como internacional)
-            total_internacional = df[df['internacional'] == True]['valor'].sum()
-            
-            # Taxas e Juros (Multa, Juros, Encargos, Anuidade)
-            taxas_mask = df['estabelecimento'].str.contains('MULTA|JUROS|ENCARGOS|ANUIDADE', case=False, regex=True, na=False)
-            total_taxas_servicos = df[taxas_mask]['valor'].sum()
-            
-            # Net spend (transactions only, excluding taxes and IOF)
-            total_compras = df[~taxas_mask & ~iof_mask]['valor'].sum()
-            
-            # Compras Parceladas (se parcela não for nulo)
-            total_parcelado = df[df['parcela'].notna()]['valor'].sum()
+        # Reconstruct validation logic
+        total_declarado = df['valor_total_declarado'].iloc[0] if 'valor_total_declarado' in df.columns else 0.0
+        total_extraido = df['valor'].sum()
+        diff = total_declarado - total_extraido
+        status = "OK" if abs(diff) < 1.0 else "DIVERGENTE"
+        
+        validation = {
+            "total_declarado": total_declarado,
+            "total_extraido": total_extraido,
+            "diff": diff,
+            "status": status
+        }
+        
+        # Converter NaN para None para JSON válido
+        df_dict = df.where(pd.notnull(df), None).to_dict(orient='records')
+        
+        # Estatísticas para o dashboard
+        
+        # Convertendo colunas relevantes para numérico se necessário
+        df['valor'] = pd.to_numeric(df['valor'], errors='coerce').fillna(0.0)
+        
+        # Cálculos específicos
+        # IOF
+        iof_mask = df['estabelecimento'].str.contains('IOF', case=False, na=False)
+        total_iof = df[iof_mask]['valor'].sum()
+        
+        # Internacional (excluindo IOF se quiser separar, mas aqui vamos pegar tudo marcado como internacional)
+        total_internacional = df[df['internacional'] == True]['valor'].sum()
+        
+        # Taxas e Juros (Multa, Juros, Encargos, Anuidade)
+        taxas_mask = df['estabelecimento'].str.contains('MULTA|JUROS|ENCARGOS|ANUIDADE', case=False, regex=True, na=False)
+        total_taxas_servicos = df[taxas_mask]['valor'].sum()
+        
+        # Net spend (transactions only, excluding taxes and IOF)
+        total_compras = df[~taxas_mask & ~iof_mask]['valor'].sum()
+        
+        # Compras Parceladas (se parcela não for nulo)
+        total_parcelado = df[df['parcela'].notna()]['valor'].sum()
 
-            # Determinar método de extração
-            extraction_method = "NATIVO ITAÚ"
-            if 'extraction_method' in df.columns and not df.empty:
-                 if "Generic" in df['extraction_method'].values:
-                     extraction_method = "GENÉRICO / OUTRO BANCO"
+        # Determinar método de extração
+        extraction_method = "NATIVO ITAÚ"
+        if 'extraction_method' in df.columns and not df.empty:
+                if "Generic" in df['extraction_method'].values:
+                    extraction_method = "GENÉRICO / OUTRO BANCO"
 
-            stats = {
-                "total_declarado": validation['total_declarado'],
-                "total_extraido": validation['total_extraido'],
-                "total_compras": float(total_compras),
-                "diferenca": validation['diff'],
-                "status": validation['status'],
-                "total_transacoes": len(df),
-                "total_iof": float(total_iof),
-                "total_internacional": float(total_internacional),
-                "total_taxas": float(total_taxas_servicos),
-                "total_parcelado": float(total_parcelado),
-                "por_categoria": df.groupby('categoria')['valor'].sum().to_dict(),
-                "por_titular": df.groupby('titular_cartao')['valor'].sum().to_dict(),
-                "metodo_extracao": extraction_method
-            }
-            
-            response_data = {
-                "filename": file.filename,
-                "statistics": stats,
-                "transactions": df_dict,
-                "raw_validation": validation
-            }
-            
-            return JSONResponse(content=response_data)
+        stats = {
+            "total_declarado": validation['total_declarado'],
+            "total_extraido": validation['total_extraido'],
+            "total_compras": float(total_compras),
+            "diferenca": validation['diff'],
+            "status": validation['status'],
+            "total_transacoes": len(df),
+            "total_iof": float(total_iof),
+            "total_internacional": float(total_internacional),
+            "total_taxas": float(total_taxas_servicos),
+            "total_parcelado": float(total_parcelado),
+            "por_categoria": df.groupby('categoria')['valor'].sum().to_dict(),
+            "por_titular": df.groupby('titular_cartao')['valor'].sum().to_dict(),
+            "metodo_extracao": extraction_method
+        }
+        
+        response_data = {
+            "filename": file.filename,
+            "statistics": stats,
+            "transactions": df_dict,
+            "raw_validation": validation
+        }
+        
+        return JSONResponse(content=response_data)
 
     except Exception as e:
         logger.error(f"Erro ao processar arquivo: {str(e)}")
