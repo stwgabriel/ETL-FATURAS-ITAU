@@ -54,12 +54,22 @@ async def extract_invoice(file: UploadFile = File(...)):
         total_extraido = df['valor'].sum()
         diff = total_declarado - total_extraido
         status = "OK" if abs(diff) < 1.0 else "DIVERGENTE"
-        
+
+        # Check for Saldo Financiado/Discounts
+        discount_note = ""
+        if not df.empty:
+            saldo_tx = df[df['estabelecimento'].str.contains("Saldo Financiado|Saldo Anterior", case=False, na=False)]
+            if not saldo_tx.empty:
+                saldo_val = saldo_tx['valor'].sum()
+                if saldo_val < 0:
+                    discount_note = f" (Incl. Desc/Saldo: {saldo_val:.2f})"
+
         validation = {
             "total_declarado": total_declarado,
             "total_extraido": total_extraido,
             "diff": diff,
-            "status": status
+            "status": status,
+            "discount_note": discount_note
         }
         
         # Converter NaN para None para JSON válido
@@ -100,6 +110,7 @@ async def extract_invoice(file: UploadFile = File(...)):
             "total_compras": float(total_compras),
             "diferenca": validation['diff'],
             "status": validation['status'],
+            "discount_note": validation.get('discount_note', ""),
             "total_transacoes": len(df),
             "total_iof": float(total_iof),
             "total_internacional": float(total_internacional),

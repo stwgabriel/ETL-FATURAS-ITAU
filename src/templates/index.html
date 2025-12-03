@@ -642,6 +642,22 @@
 
             // Update Cards
             animateValue("totalDeclarado", stats.total_declarado);
+            
+            // Add Discount Note if present
+            const totalDeclaradoEl = document.getElementById("totalDeclarado");
+            const declaredContainer = totalDeclaradoEl.parentElement;
+            
+            // Clear previous note
+            const prevNote = declaredContainer.querySelector('.discount-note');
+            if (prevNote) prevNote.remove();
+            
+            if (stats.discount_note) {
+                const noteDiv = document.createElement('div');
+                noteDiv.className = "discount-note text-[10px] text-yellow-600 dark:text-yellow-400 font-mono mt-1";
+                noteDiv.textContent = stats.discount_note;
+                totalDeclaradoEl.after(noteDiv);
+            }
+
             animateValue("totalIOF", stats.total_iof);
             animateValue("totalInternacional", stats.total_internacional);
             animateValue("totalTaxas", stats.total_taxas);
