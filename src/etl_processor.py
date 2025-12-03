@@ -778,6 +778,40 @@ def process_files_to_csv(file_paths: Union[str, List[str]]) -> Dict[str, str]:
             
     return results
 
+def process_files_to_df(file_paths: Union[str, List[str]]) -> pd.DataFrame:
+    """
+    Processa um ou mais arquivos PDF e retorna um único DataFrame concatenado com as transações.
+    
+    Args:
+        file_paths: Uma string de caminho de arquivo ou uma lista de strings de caminho de arquivo.
+        
+    Returns:
+        pd.DataFrame: DataFrame contendo todas as transações de todos os arquivos processados.
+    """
+    if isinstance(file_paths, str):
+        file_paths = [file_paths]
+        
+    processor = InvoiceProcessor()
+    all_dfs = []
+    
+    for path in file_paths:
+        if not os.path.exists(path):
+            logging.warning(f"File not found: {path}")
+            continue
+            
+        try:
+            df = processor.process_pdf(path)
+            if not df.empty:
+                all_dfs.append(df)
+        except Exception as e:
+            logging.error(f"Erro ao processar {path}: {e}")
+            
+    if not all_dfs:
+        return pd.DataFrame()
+        
+    return pd.concat(all_dfs, ignore_index=True)
+
+
 if __name__ == "__main__":
     # Exemplo de uso e verificação
     import sys
