@@ -173,7 +173,7 @@ class InvoiceProcessor:
                         if mp:
                             pagamento_efetuado = self.parse_money(mp.group(1))
                         
-                        ms = re.search(r'saldofinanciado.*?(-?[\d\.,]+)', tnorm_hdr)
+                        ms = re.search(r'(?:saldofinanciado|saldoanterior).*?(-?[\d\.,]+)', tnorm_hdr)
                         if ms:
                             saldo_financiado = self.parse_money(ms.group(1))
                             if saldo_financiado != 0:

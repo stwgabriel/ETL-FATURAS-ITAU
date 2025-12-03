@@ -52,11 +52,22 @@ def process_directory(directory_path):
                     summary["failed"] += 1
                     status_icon = "⚠️ DISCREPANCIA"
 
+                # Check for Saldo Financiado/Discounts
+                df = result["dataframe"]
+                discount_note = ""
+                if not df.empty:
+                    # Check for specific description
+                    saldo_tx = df[df['estabelecimento'].str.contains("Saldo Financiado|Saldo Anterior", case=False, na=False)]
+                    if not saldo_tx.empty:
+                        saldo_val = saldo_tx['valor'].sum()
+                        if saldo_val < 0:
+                            discount_note = f" (Incl. Desc/Saldo: {saldo_val:.2f})"
+
                 print(f"Status: {status}")
-                print(f"Declared: {validation['total_declarado']:.2f} | Calculated: {validation['total_extraido']:.2f} | Diff: {validation['diff']:.2f}")
+                print(f"Declared: {validation['total_declarado']:.2f}{discount_note} | Calculated: {validation['total_extraido']:.2f} | Diff: {validation['diff']:.2f}")
                 
                 # Add to report line
-                report_lines.append(f"| {filename} | {status_icon} | {validation['total_declarado']:.2f} | {validation['total_extraido']:.2f} | {validation['diff']:.2f} |")
+                report_lines.append(f"| {filename} | {status_icon} | {validation['total_declarado']:.2f}{discount_note} | {validation['total_extraido']:.2f} | {validation['diff']:.2f} |")
 
                 # Calculate sum per card from transactions for extra verification
                 df = result["dataframe"]
