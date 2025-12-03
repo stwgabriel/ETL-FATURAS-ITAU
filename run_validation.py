@@ -4,9 +4,10 @@ import glob
 
 # Add src to path
 sys.path.append(os.path.join(os.getcwd(), 'src'))
-from etl_faturas_text import InvoiceProcessor
+from etl_faturas import InvoiceProcessor
 
 def process_directory(directory_path):
+
     pdf_files = glob.glob(os.path.join(directory_path, "*.pdf"))
     
     if not pdf_files:
@@ -95,5 +96,8 @@ def process_directory(directory_path):
 
 if __name__ == "__main__":
     # Directory containing the PDFs
-    INVOICES_DIR = "/Users/stwgabriel/Documents/Development/Fullstack/ETLS/data/Faturas"
+    if len(sys.argv) > 1:
+        INVOICES_DIR = sys.argv[1]
+    else:
+        INVOICES_DIR = "/Users/stwgabriel/Documents/Development/Fullstack/ETLS/data/Faturas"
     process_directory(INVOICES_DIR)

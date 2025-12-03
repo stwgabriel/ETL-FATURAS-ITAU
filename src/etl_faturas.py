@@ -172,6 +172,27 @@ class InvoiceProcessor:
                         mp = re.search(r'pagamentoefetuado.*?-([\d\.,]+)', tnorm_hdr)
                         if mp:
                             pagamento_efetuado = self.parse_money(mp.group(1))
+                        
+                        ms = re.search(r'saldofinanciado.*?(-?[\d\.,]+)', tnorm_hdr)
+                        if ms:
+                            saldo_financiado = self.parse_money(ms.group(1))
+                            if saldo_financiado != 0:
+                                transactions.append({
+                                    "arquivo": filename,
+                                    "data_emissao": header_info.get("data_emissao"),
+                                    "data_vencimento": header_info.get("data_vencimento"),
+                                    "valor_total_declarado": header_info.get("valor_total_declarado"),
+                                    "nome_cliente": header_info.get("nome_cliente"),
+                                    "cartao_principal": header_info.get("cartao_principal"),
+                                    "titular_cartao": current_card_holder,
+                                    "final_cartao": current_card_number,
+                                    "internacional": False,
+                                    "data_transacao": header_info.get("data_vencimento"),
+                                    "estabelecimento": "Saldo Financiado Anterior",
+                                    "categoria": "Financeiro",
+                                    "parcela": None,
+                                    "valor": saldo_financiado
+                                })
                     except:
                         pass
                     
@@ -187,6 +208,7 @@ class InvoiceProcessor:
                     ignore_section = False
                     in_summary_section = False
                     in_launches_section = False
+                    in_future_table = False
                     after_partial_total = False
                     
                     text = self.extract_page_text(pdf_path, page_num, page, use_ocr)
@@ -240,6 +262,8 @@ class InvoiceProcessor:
                             in_summary_section = False
                             in_launches_section = True
                             after_partial_total = False
+                            seen_total_section_partial = False
+                            in_future_table = False
                             logging.info(f"Reativando leitura na página {page_num+1}: {line.strip()}")
 
                         # Detecção de Seções de Resumo (evitar duplicidade de encargos)
@@ -249,31 +273,27 @@ class InvoiceProcessor:
 
                         current_line_is_total = False
                         # Verificação de seções a ignorar
-                        if ("lancamentosprodutoseservicos" in line_norm or "lançamentosprodutoseserviços" in line_norm):
-                            mv = re.search(r'(-?[\d\.,]+)(?!\s*%)', line)
-                            if mv:
-                                valor_ps = self.parse_money(mv.group(1))
-                                already_ps = any(
-                                    t.get("final_cartao") == current_card_number and t.get("estabelecimento") == "Produtos e serviços"
-                                    for t in transactions
-                                )
-                                if not already_ps:
-                                    transactions.append({
-                                        "arquivo": filename,
-                                        "data_emissao": header_info.get("data_emissao"),
-                                        "data_vencimento": header_info.get("data_vencimento"),
-                                        "valor_total_declarado": header_info.get("valor_total_declarado"),
-                                        "nome_cliente": header_info.get("nome_cliente"),
-                                        "cartao_principal": header_info.get("cartao_principal"),
-                                        "titular_cartao": current_card_holder,
-                                        "final_cartao": current_card_number,
-                                        "internacional": False,
-                                        "data_transacao": header_info.get("data_vencimento"),
-                                        "estabelecimento": "Produtos e serviços",
-                                        "categoria": "Outros",
-                                        "parcela": None,
-                                        "valor": valor_ps
-                                    })
+                        # Capture IOF Repass (International)
+                        if "repassedeiofemr$" in line_norm:
+                            m_iof = re.search(r'repassedeiofemr\$\s*([\d\.,]+)', line_norm)
+                            if m_iof:
+                                val_iof = self.parse_money(m_iof.group(1))
+                                transactions.append({
+                                    "arquivo": filename,
+                                    "data_emissao": header_info.get("data_emissao"),
+                                    "data_vencimento": header_info.get("data_vencimento"),
+                                    "valor_total_declarado": header_info.get("valor_total_declarado"),
+                                    "nome_cliente": header_info.get("nome_cliente"),
+                                    "cartao_principal": header_info.get("cartao_principal"),
+                                    "titular_cartao": current_card_holder,
+                                    "final_cartao": current_card_number,
+                                    "internacional": True,
+                                    "data_transacao": header_info.get("data_vencimento"),
+                                    "estabelecimento": "IOF Internacional",
+                                    "categoria": "Financeiro",
+                                    "parcela": None,
+                                    "valor": val_iof
+                                })
 
                         if any(term in line_norm for term in [
                             "preparamosoutrasopções",
@@ -289,6 +309,12 @@ class InvoiceProcessor:
                             "demaisfaturas"
                         ]):
                             ignore_section = True
+
+                            # Detectar início de tabela futura
+                            if any(term in line_norm for term in ["comprasparceladas", "lançamentosfuturos"]):
+                                in_future_table = True
+                                logging.info(f"Detectada tabela futura na página {page_num+1}")
+
                             if "totaldoslançamentosatuais" in line_norm:
                                 current_line_is_total = True
                                 # Verifica se é FULL (início da linha) ou PARTIAL (meio da linha)
@@ -296,13 +322,12 @@ class InvoiceProcessor:
                                 if match_idx < 5: # Permite pequenos artefatos no início
                                     seen_total_section_full = True
                                     logging.info(f"Fim da seção de lançamentos (FULL) detectado na página {page_num+1}")
+                                    in_launches_section = False
                                 else:
                                     seen_total_section_partial = True
                                     after_partial_total = True
                                     logging.info(f"Fim da seção de lançamentos (PARTIAL) detectado na página {page_num+1}")
-                                in_launches_section = False
                                 
-
                             logging.info(f"Iniciando seção ignorada na página {page_num+1}: {line.strip()}")
                         
                         # Se a seção de lançamentos acabou (FULL), ignorar transações
@@ -310,12 +335,12 @@ class InvoiceProcessor:
                             logging.debug(f"Ignorando linha pós-total (FULL): {line.strip()}")
                             continue
                         # Se detectamos TOTAL parcial, só retomamos após novo cabeçalho de lançamentos (não por trans_line)
-                        if after_partial_total:
+                        if after_partial_total and not current_line_is_total:
                             if "lançamentos" in line_norm or "lancamentos" in line_norm or "transações" in line_norm or "transacoes" in line_norm or "minhasdespesas" in line_norm:
                                 after_partial_total = False
                                 in_launches_section = True
-                            else:
-                                continue
+                                seen_total_section_partial = False
+                                logging.info(f"Novo cabeçalho detectado, resetando seção parcial: {line.strip()}")
 
                         # Detecta se a linha parece transação (data no início da linha)
                         is_trans_line = re.search(r'^\s*(\d{2}/\d{2})\b', line)
@@ -323,14 +348,17 @@ class InvoiceProcessor:
                         if ignore_section:
                             if "totaldoslançamentosatuais" in line_norm:
                                 pass
+                            elif is_trans_line:
+                                # Se a linha começa com data, é uma transação (mesmo que tenha keywords de rodapé na mesma linha)
+                                pass
                             else:
                                 if any(term in line_norm for term in ["comprasparceladas", "demaisfaturas", "totalparapróximasfaturas"]):
                                     continue
                                 if not is_trans_line:
                                     continue
                         
-                        # Ativa seção de lançamentos ao encontrar uma linha de transação (apenas se não estivermos após total parcial)
-                        if not in_launches_section and is_trans_line and not after_partial_total:
+                        # Ativa seção de lançamentos ao encontrar uma linha de transação (apenas se não estivermos após total parcial e não estivermos em tabela futura)
+                        if not in_launches_section and is_trans_line and not after_partial_total and not in_future_table:
                             in_launches_section = True
                         
                         # Identificação de Seção Internacional
@@ -346,11 +374,11 @@ class InvoiceProcessor:
                             continue
 
                         # Regex de Transação (data em qualquer posição; evita capturar percentuais)
-                        matches = list(re.finditer(r'(\d{2}/\d{2})\s+(.*?)\s+(-?\s*(?:\d{1,3}(?:\.\d{3})*|\d+),\d{2})(?!\s*%)', line))
+                        matches = list(re.finditer(r'(\d{2}/\d{2})\s+(.*?)\s+(-?\s*(?:\d{1,3}(?:\.\d{3})*|\d+),\d{2})(?!%)', line))
                         
                         # Se estivermos em seção PARTIAL (coluna da direita é Futuro), limitamos a 1 match por linha
                         # para evitar pegar a coluna da direita
-                        if seen_total_section_partial and len(matches) > 1:
+                        if (seen_total_section_partial or in_future_table) and len(matches) > 1:
                              logging.debug(f"Limitando matches em seção PARTIAL: {len(matches)} -> 1")
                              matches = matches[:1]
 
@@ -382,6 +410,16 @@ class InvoiceProcessor:
                             # Inferência de Ano e Filtragem de Futuros
                             data_transacao = dt_str
                             is_future = False
+
+                            # Filtragem de Tabela Futura em Seção Parcial (Interleaved)
+                            # Se estamos em uma seção parcial (Total já visto) e a transação tem formato de parcela (XX/YY),
+                            # assumimos que pertence à coluna da direita (Lançamentos Futuros/Próximas Faturas), EXCETO se for a 1ª parcela (01/YY).
+                            if seen_total_section_partial or in_future_table:
+                                match_inst = re.search(r'(\d{2})/(\d{2})', desc)
+                                if match_inst:
+                                    if match_inst.group(1) != '01':
+                                        logging.info(f"Ignorando transação de parcela > 01 em seção parcial (provável tabela futura): {desc} {valor}")
+                                        continue
                             
                             if header_info.get("data_vencimento"):
                                 try:
@@ -443,39 +481,9 @@ class InvoiceProcessor:
                                 pass
 
                         if not matches:
-                            if "lancamentosprodutoseservicos" in line_norm or "lançamentosprodutoseserviços" in line_norm:
-                                m = re.search(r'(-?[\d\.,]+)(?!\s*%)', line)
-                                if m:
-                                    valor = self.parse_money(m.group(1))
-                                    already = any(
-                                        t.get("final_cartao") == current_card_number and t.get("estabelecimento") == "Produtos e serviços"
-                                        for t in transactions
-                                    )
-                                    if not already:
-                                        idx_ps = len(transactions)
-                                        transactions.append({
-                                            "arquivo": filename,
-                                            "data_emissao": header_info.get("data_emissao"),
-                                            "data_vencimento": header_info.get("data_vencimento"),
-                                            "valor_total_declarado": header_info.get("valor_total_declarado"),
-                                            "nome_cliente": header_info.get("nome_cliente"),
-                                            "cartao_principal": header_info.get("cartao_principal"),
-                                            "titular_cartao": current_card_holder,
-                                            "final_cartao": current_card_number,
-                                            "internacional": False,
-                                            "data_transacao": header_info.get("data_vencimento"),
-                                            "estabelecimento": "Produtos e serviços",
-                                            "categoria": "Outros",
-                                            "parcela": None,
-                                            "valor": valor
-                                        })
-                                        block_ps_index = idx_ps
-                                        try:
-                                            if block_card_number == current_card_number:
-                                                block_sum += valor
-                                                ps_total_agg += valor
-                                        except:
-                                            pass
+                            # Block for "Produtos e serviços" removed to avoid duplication
+                            pass
+
                         
 
             # Finaliza último bloco
@@ -492,6 +500,50 @@ class InvoiceProcessor:
         except Exception as e:
             logging.error(f"Erro ao processar {filename}: {str(e)}")
             return None
+
+        # Deduplicação de parcelas futuras listadas no mesmo dia (ex: 01/03 e 02/03 na mesma fatura)
+        # Apenas para faturas Itau, onde ocorre projeção futura misturada.
+        # Em Mastercard, pode ser antecipação (todas as parcelas cobradas).
+        if len(transactions) > 0 and "itau" in filename.lower():
+            try:
+                # Mapear transações para identificar duplicatas de parcelamento no mesmo dia
+                # Chave: (data, estabelecimento_base) -> Lista de (indice, numero_parcela)
+                map_parcels = {}
+                
+                for i, t in enumerate(transactions):
+                    desc = t['estabelecimento']
+                    dt = t['data_transacao']
+                    
+                    # Extrair base e parcela
+                    # Ex: LOJA 01/05 -> Base="LOJA", Parcela=1
+                    # Ex: LOJA01/05 -> Base="LOJA", Parcela=1
+                    m = re.search(r'^(.*?)\s*(\d{2})/\d{2}$', desc)
+                    if m:
+                        base = m.group(1).strip()
+                        parcel = int(m.group(2))
+                        key = (dt, base)
+                        
+                        if key not in map_parcels:
+                            map_parcels[key] = []
+                        map_parcels[key].append((i, parcel))
+                
+                indices_to_remove = []
+                for key, items in map_parcels.items():
+                    if len(items) > 1:
+                        # Se houver mais de uma parcela para o mesmo estabelecimento no mesmo dia
+                        # Manter apenas a menor parcela (assumindo que as maiores são projeções)
+                        min_parcel = min(x[1] for x in items)
+                        for idx, p in items:
+                            if p > min_parcel:
+                                indices_to_remove.append(idx)
+                                logging.info(f"Removendo parcela futura duplicada (mesmo dia): {transactions[idx]['estabelecimento']}")
+                
+                # Remover índices (do maior para o menor)
+                for idx in sorted(indices_to_remove, reverse=True):
+                    transactions.pop(idx)
+                    
+            except Exception as e:
+                logging.error(f"Erro na deduplicação de parcelas: {e}")
 
         # Criação do DataFrame da Fatura
         df = pd.DataFrame(transactions)
