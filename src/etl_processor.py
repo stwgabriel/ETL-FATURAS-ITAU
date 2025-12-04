@@ -240,7 +240,8 @@ class InvoiceProcessor:
         if diff > 0:
             # Potential missing charges to look for
             patterns = [
-                (r'Encargos\s*(?:R\$)?\s*([\d\.,]+)', "Encargos de Financiamento"),
+                (r'Encargos\s*(?:\(.*?\))?\s*(?:R\$)?\s*([\d\.,]+)', "Encargos de Financiamento"),
+                (r'Total\s*de\s*encargos\s*(?:em\s*R\$)?\s*([\d\.,]+)', "Encargos de Financiamento"),
                 (r'IOF\s*(?:R\$)?\s*([\d\.,]+)', "IOF de Financiamento"),
                 (r'Juros\s*(?:R\$)?\s*([\d\.,]+)', "Juros"),
                 (r'Multa\s*(?:R\$)?\s*([\d\.,]+)', "Multa"),
