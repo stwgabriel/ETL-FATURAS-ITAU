@@ -344,31 +344,45 @@ class InvoiceProcessor:
             
         transactions.append(new_trans)
 
-    def process_pdf(self, pdf_path: str) -> pd.DataFrame:
+    def process_pdf(self, pdf_path: str) -> tuple[pd.DataFrame, Dict]:
         """
-        Process a PDF file and return a pandas DataFrame with the transactions.
+        Process a PDF file and return a pandas DataFrame with the transactions and a summary dictionary.
 
         Returns:
-            pd.DataFrame: DataFrame with columns:
-                - arquivo
-                - data_emissao
-                - data_vencimento
-                - valor_total_declarado
-                - nome_cliente
-                - cartao_principal
-                - titular_cartao
-                - final_cartao
-                - internacional
-                - data_transacao
-                - estabelecimento
-                - categoria
-                - parcela
-                - valor
+            tuple: (pd.DataFrame, Dict)
+                - DataFrame: DataFrame with columns:
+                    - arquivo
+                    - data_emissao
+                    - data_vencimento
+                    - valor_total_declarado
+                    - nome_cliente
+                    - cartao_principal
+                    - titular_cartao
+                    - final_cartao
+                    - internacional
+                    - data_transacao
+                    - estabelecimento
+                    - categoria
+                    - parcela
+                    - valor
+                - Dict: Summary dictionary with keys:
+                    - valor_total_declarado
+                    - data_emissao
+                    - data_vencimento
+                    - nome_cliente
+                    - cartao_principal
+                    - resumo_cartoes (List of Dicts with titular, final, total)
 
         Example Output:
-            | arquivo | data_emissao | ... | estabelecimento | valor |
-            |---------|--------------|-----|-----------------|-------|
-            | Fatura..| 26/06/2025   | ... | IFD*BARRESTAUR..| 30.92 |
+            (df, {
+                "valor_total_declarado": 1234.56,
+                "data_emissao": "26/06/2025",
+                ...
+                "resumo_cartoes": [
+                    {"titular": "JOAO", "final": "1234", "total": 500.00},
+                    ...
+                ]
+            })
         """
         filename = os.path.basename(pdf_path)
         logging.info(f"Iniciando processamento (TEXT): {filename}")
@@ -558,163 +572,172 @@ class InvoiceProcessor:
 
                         # Transaction Extraction Logic
                         if in_launches_section or is_trans_line:
-                            event = {'type': None}
+                            events = []
                             
-                            # Match logic
+                            # 1. Check for Card Header
                             match_card = re.search(r'(?:cartão|final)\s*(?:xxxx\s*xxxx\s*xxxx\s*)?(\d{4})', line, re.IGNORECASE)
                             if match_card:
-                                event = {'type': 'card_header', 'match': match_card}
-                            elif "internacional" in line_norm:
-                                event = {'type': 'international_header'}
-                            else:
-                                match_trans = re.search(r'(\d{2}/\d{2})\s+(.*?)\s+(-?\s*(?:\d{1,3}(?:\.\d{3})*|\d+),\d{2})(?!\s*%)', line)
-                                match_iof = None
-                                if not match_trans:
-                                    match_iof = re.search(r'(IOF\s+.*?|TAR\s+.*?)\s+(-?\s*(?:\d{1,3}(?:\.\d{3})*|\d+),\d{2})(?!\s*%)', line)
-
-                                if match_trans:
-                                    event = {'type': 'transaction', 'match': match_trans, 'has_date': True}
-                                elif match_iof:
-                                    event = {'type': 'transaction', 'match': match_iof, 'has_date': False}
-
-                            if event['type'] == 'international_header':
-                                is_international_section = True
-                                current_card_is_international = True
+                                events.append({'type': 'card_header', 'match': match_card, 'start': match_card.start()})
                             
-                            elif event['type'] == 'card_header':
-                                candidate_card = event['match'].group(1)
-                                candidate_name = line[:event['match'].start()].strip()
+                            # 2. Check for Transaction (Multiple per line)
+                            for match_trans in re.finditer(r'(\d{2}/\d{2})\s+(.*?)\s+(-?\s*(?:\d{1,3}(?:\.\d{3})*|\d+),\d{2})(?!\s*%)', line):
+                                events.append({'type': 'transaction', 'match': match_trans, 'has_date': True, 'start': match_trans.start()})
+
+                            # Check for IOF/TAR (Multiple per line)
+                            for match_iof in re.finditer(r'(IOF\s+.*?|TAR\s+.*?)\s+(-?\s*(?:\d{1,3}(?:\.\d{3})*|\d+),\d{2})(?!\s*%)', line):
+                                events.append({'type': 'transaction', 'match': match_iof, 'has_date': False, 'start': match_iof.start()})
+
+                            # 3. Check for International Header
+                            if "internacional" in line_norm:
+                                is_in_trans = False
+                                for e in events:
+                                    if e['type'] == 'transaction':
+                                        if "internacional" in e['match'].group(0).lower():
+                                            is_in_trans = True
+                                if not is_in_trans:
+                                    idx = line_norm.find("internacional")
+                                    events.append({'type': 'international_header', 'start': idx})
+
+                            # Sort events by start position
+                            events.sort(key=lambda x: x['start'])
+
+                            for event in events:
+                                if event['type'] == 'international_header':
+                                    is_international_section = True
+                                    current_card_is_international = True
                                 
-                                if ("LANÇAMENTOS" in candidate_name.upper() or "CARTÃO" in candidate_name.upper()) and len(candidate_name) < 25:
-                                    pass
-                                elif len(candidate_name) < 2:
-                                    pass
-                                else:
-                                    in_ps_section = False
-                                    clean_name = re.sub(r'^.*[:;,]\s*', '', candidate_name)
-                                    clean_name = re.sub(r'.*\d{2}/\d{2}.*?\d+[,.]\d+\s*', '', clean_name)
+                                elif event['type'] == 'card_header':
+                                    candidate_card = event['match'].group(1)
+                                    candidate_name = line[:event['match'].start()].strip()
                                     
-                                    if len(clean_name) > 2:
-                                        # Close previous block logic
-                                        if block_card_number is not None and block_target is not None and block_ps_index is not None:
-                                            try:
-                                                ps_val = transactions[block_ps_index]["valor"]
-                                                sum_without_ps = block_sum - ps_val
-                                                if abs(sum_without_ps - block_target) < abs(block_sum - block_target) - 0.001:
-                                                    transactions.pop(block_ps_index)
-                                                    block_sum = sum_without_ps
-                                            except Exception:
-                                                pass
-
-                                        current_card_holder = clean_name.strip()
-                                        current_card_number = candidate_card
-                                        block_card_number = current_card_number
-                                        block_target = None
-                                        block_sum = 0.0
-                                        block_ps_index = None
-                                        
-                                        m_sub = re.search(r'final\s*' + candidate_card + r'[^\d]*(-?\s*(?:\d{1,3}(?:\.\d{3})*|\d+),\d{2})(?!\s*%)', line)
-                                        if m_sub:
-                                            block_target = self.parse_money(m_sub.group(1))
-
-                                        if is_international_section:
-                                            current_card_is_international = True
-                                            is_international_section = False
-                                        else:
-                                            current_card_is_international = False
-                                        
-                                        seen_total_section_full = False 
-                                        seen_total_section_partial = False
-
-                            elif event['type'] == 'transaction':
-                                match = event['match']
-                                if event.get('has_date', True):
-                                    dt_str, desc, val_str = match.groups()
-                                    last_seen_date_str = dt_str
-                                else:
-                                    desc, val_str = match.groups()
-                                    dt_str = last_seen_date_str if 'last_seen_date_str' in locals() and last_seen_date_str else None
-                                    if not dt_str and header_info.get("data_emissao"):
-                                        try:
-                                            dt_str = datetime.strptime(header_info["data_emissao"], "%d/%m/%Y").strftime("%d/%m")
-                                        except:
-                                            pass
-
-                                desc = desc.strip()
-                                
-                                if not re.search(r'\d', val_str):
-                                    continue
-                                
-                                val_str_clean = val_str.replace(" ", "")
-                                valor = self.parse_money(val_str_clean)
-                                
-                                if valor < 0 and ("PAGAMENTO" in desc.upper() or "DEBITO AUT" in desc.upper()):
-                                    continue
-                                
-                                if current_line_is_total and abs(valor - header_info.get("valor_total_declarado", 0)) < 1.0:
-                                     continue
-
-                                parcela = None
-                                match_parc = re.search(r'(\d{2}/\d{2})$', desc)
-                                if match_parc:
-                                    parcela = match_parc.group(1)
-
-                                data_transacao = dt_str
-                                is_future = False
-                                
-                                if header_info.get("data_vencimento"):
-                                    try:
-                                        data_vencimento_dt = datetime.strptime(header_info["data_vencimento"], "%d/%m/%Y")
-                                        day, month = map(int, dt_str.split('/'))
-                                        year = data_vencimento_dt.year
-                                        
-                                        delta_month = month - data_vencimento_dt.month
-                                        
-                                        if delta_month > 0:
-                                            if delta_month < 6:
-                                                is_future = True
-                                            else:
-                                                year -= 1
-                                        elif delta_month == 0:
-                                            if day > data_vencimento_dt.day:
-                                                is_future = True
-                                        
-                                        if not is_future:
-                                            data_transacao_obj = datetime(year, month, day)
-                                            data_transacao = data_transacao_obj.strftime("%Y-%m-%d")
-                                            
-                                    except ValueError:
+                                    if ("LANÇAMENTOS" in candidate_name.upper() or "CARTÃO" in candidate_name.upper()) and len(candidate_name) < 25:
                                         pass
-                                
-                                if is_future:
-                                    continue
+                                    elif len(candidate_name) < 2:
+                                        pass
+                                    else:
+                                        in_ps_section = False
+                                        clean_name = re.sub(r'^.*[:;,]\s*', '', candidate_name)
+                                        clean_name = re.sub(r'.*\d{2}/\d{2}.*?\d+[,.]\d+\s*', '', clean_name)
+                                        clean_name = clean_name.strip().rstrip('(').strip()
+                                        
+                                        if len(clean_name) > 2:
+                                            # Close previous block logic
+                                            if block_card_number is not None and block_target is not None and block_ps_index is not None:
+                                                try:
+                                                    ps_val = transactions[block_ps_index]["valor"]
+                                                    sum_without_ps = block_sum - ps_val
+                                                    if abs(sum_without_ps - block_target) < abs(block_sum - block_target) - 0.001:
+                                                        transactions.pop(block_ps_index)
+                                                        block_sum = sum_without_ps
+                                                except Exception:
+                                                    pass
+    
+                                            current_card_holder = clean_name.strip()
+                                            current_card_number = candidate_card
+                                            block_card_number = current_card_number
+                                            block_target = None
+                                            block_sum = 0.0
+                                            block_ps_index = None
+                                            
+                                            m_sub = re.search(r'final\s*' + candidate_card + r'[^\d]*(-?\s*(?:\d{1,3}(?:\.\d{3})*|\d+),\d{2})(?!\s*%)', line)
+                                            if m_sub:
+                                                block_target = self.parse_money(m_sub.group(1))
+    
+                                            if is_international_section:
+                                                current_card_is_international = True
+                                                is_international_section = False
+                                            else:
+                                                current_card_is_international = False
+                                            
+                                            seen_total_section_full = False 
+                                            seen_total_section_partial = False
+    
+                                elif event['type'] == 'transaction':
+                                    match = event['match']
+                                    if event.get('has_date', True):
+                                        dt_str, desc, val_str = match.groups()
+                                        last_seen_date_str = dt_str
+                                    else:
+                                        desc, val_str = match.groups()
+                                        dt_str = last_seen_date_str if 'last_seen_date_str' in locals() and last_seen_date_str else None
+                                        if not dt_str and header_info.get("data_emissao"):
+                                            try:
+                                                dt_str = datetime.strptime(header_info["data_emissao"], "%d/%m/%Y").strftime("%d/%m")
+                                            except:
+                                                pass
+    
+                                    desc = desc.strip()
+                                    
+                                    if not re.search(r'\d', val_str):
+                                        continue
+                                    
+                                    val_str_clean = val_str.replace(" ", "")
+                                    valor = self.parse_money(val_str_clean)
+                                    
+                                    if valor < 0 and ("PAGAMENTO" in desc.upper() or "DEBITO AUT" in desc.upper()):
+                                        continue
+                                    
+                                    if current_line_is_total and abs(valor - header_info.get("valor_total_declarado", 0)) < 1.0:
+                                         continue
+    
+                                    parcela = None
+                                    match_parc = re.search(r'(\d{2}/\d{2})$', desc)
+                                    if match_parc:
+                                        parcela = match_parc.group(1)
+    
+                                    data_transacao = dt_str
+                                    is_future = False
+                                    
+                                    if header_info.get("data_vencimento"):
+                                        try:
+                                            data_vencimento_dt = datetime.strptime(header_info["data_vencimento"], "%d/%m/%Y")
+                                            day, month = map(int, dt_str.split('/'))
+                                            year = data_vencimento_dt.year
+                                            
+                                            candidate_date = datetime(year, month, day)
+                                            
+                                            # Use emission date to detect year rollover
+                                            if header_info.get("data_emissao"):
+                                                try:
+                                                    data_emissao_dt = datetime.strptime(header_info["data_emissao"], "%d/%m/%Y")
+                                                    if candidate_date > data_emissao_dt:
+                                                        year -= 1
+                                                        candidate_date = datetime(year, month, day)
+                                                except:
+                                                    pass
+                                            
+                                            data_transacao = candidate_date.strftime("%Y-%m-%d")
+                                                
+                                        except ValueError:
+                                            pass
+                                    
+                                    # Future check removed to ensure all transactions are captured
 
-                                is_iof = "IOF" in desc.upper()
-                                
-                                if in_ps_section:
-                                    ps_total_agg += valor
-                                
-                                transactions.append({
-                                    "arquivo": filename,
-                                    "data_emissao": header_info.get("data_emissao"),
-                                    "data_vencimento": header_info.get("data_vencimento"),
-                                    "valor_total_declarado": header_info.get("valor_total_declarado"),
-                                    "nome_cliente": header_info.get("nome_cliente"),
-                                    "cartao_principal": header_info.get("cartao_principal"),
-                                    "titular_cartao": current_card_holder,
-                                    "final_cartao": current_card_number,
-                                    "internacional": current_card_is_international or is_iof,
-                                    "data_transacao": data_transacao,
-                                    "estabelecimento": desc,
-                                    "categoria": self.categorize_transaction(desc),
-                                    "parcela": parcela,
-                                    "valor": valor
-                                })
-                                try:
-                                    if block_card_number == current_card_number:
-                                        block_sum += valor
-                                except:
-                                    pass
+                                    is_iof = "IOF" in desc.upper()
+                                    
+                                    if in_ps_section:
+                                        ps_total_agg += valor
+                                    transactions.append({
+                                        "arquivo": filename,
+                                        "data_emissao": header_info.get("data_emissao"),
+                                        "data_vencimento": header_info.get("data_vencimento"),
+                                        "valor_total_declarado": header_info.get("valor_total_declarado"),
+                                        "nome_cliente": header_info.get("nome_cliente"),
+                                        "cartao_principal": header_info.get("cartao_principal"),
+                                        "titular_cartao": current_card_holder,
+                                        "final_cartao": current_card_number,
+                                        "internacional": current_card_is_international or is_iof,
+                                        "data_transacao": data_transacao,
+                                        "estabelecimento": desc,
+                                        "categoria": self.categorize_transaction(desc),
+                                        "parcela": parcela,
+                                        "valor": valor
+                                    })
+                                    try:
+                                        if block_card_number == current_card_number:
+                                            block_sum += valor
+                                    except:
+                                        pass
 
             if block_card_number is not None and block_target is not None and block_ps_index is not None:
                 try:
@@ -727,7 +750,7 @@ class InvoiceProcessor:
 
         except Exception as e:
             logging.error(f"Erro ao processar {filename}: {str(e)}")
-            return pd.DataFrame()
+            return pd.DataFrame(), {}
 
         # Fallback para Extração Genérica
         if not transactions or header_info["valor_total_declarado"] == 0:
@@ -745,7 +768,43 @@ class InvoiceProcessor:
         # Final Reconciliation Step
         transactions = self.reconcile_discrepancies(transactions, header_info, page_texts)
 
-        return pd.DataFrame(transactions)
+        df = pd.DataFrame(transactions)
+        
+        # Build Summary
+        summary = {
+            "valor_total_declarado": header_info.get("valor_total_declarado"),
+            "data_emissao": header_info.get("data_emissao"),
+            "data_vencimento": header_info.get("data_vencimento"),
+            "nome_cliente": header_info.get("nome_cliente"),
+            "cartao_principal": header_info.get("cartao_principal"),
+            "resumo_cartoes": []
+        }
+
+        if not df.empty:
+            # Group by card holder and last 4 digits
+            try:
+                # Convert value to numeric just in case
+                df['valor'] = pd.to_numeric(df['valor'], errors='coerce').fillna(0.0)
+                
+                # Create a grouping key
+                # Some transactions might not have 'titular_cartao' or 'final_cartao' if extracted generically
+                if 'titular_cartao' not in df.columns:
+                    df['titular_cartao'] = header_info.get("nome_cliente")
+                if 'final_cartao' not in df.columns:
+                    df['final_cartao'] = "XXXX"
+
+                grouped = df.groupby(['titular_cartao', 'final_cartao'])['valor'].sum().reset_index()
+                
+                for _, row in grouped.iterrows():
+                    summary["resumo_cartoes"].append({
+                        "titular": row['titular_cartao'],
+                        "final": row['final_cartao'],
+                        "total": float(row['valor'])
+                    })
+            except Exception as e:
+                logging.error(f"Error building card summary: {e}")
+
+        return df, summary
 
 def process_files_to_csv(file_paths: Union[str, List[str]]) -> Dict[str, str]:
     """
@@ -768,7 +827,7 @@ def process_files_to_csv(file_paths: Union[str, List[str]]) -> Dict[str, str]:
             logging.warning(f"File not found: {path}")
             continue
             
-        df = processor.process_pdf(path)
+        df, _ = processor.process_pdf(path)
         if not df.empty:
             csv_buffer = StringIO()
             df.to_csv(csv_buffer, index=False)
@@ -800,7 +859,8 @@ def process_files_to_df(file_paths: Union[str, List[str]]) -> pd.DataFrame:
             continue
             
         try:
-            df = processor.process_pdf(path)
+            # Now returns a tuple, we just need the DF
+            df, _ = processor.process_pdf(path)
             if not df.empty:
                 all_dfs.append(df)
         except Exception as e:
@@ -826,7 +886,16 @@ if __name__ == "__main__":
     if os.path.exists(target_path):
         print(f"Processando arquivo: {target_path}")
         processor = InvoiceProcessor()
-        df_result = processor.process_pdf(target_path)
+        df_result, summary = processor.process_pdf(target_path)
+        
+        print("\n--- Resumo da Fatura ---")
+        for k, v in summary.items():
+            if k == "resumo_cartoes":
+                print(f"{k}:")
+                for item in v:
+                    print(f"  - {item}")
+            else:
+                print(f"{k}: {v}")
         
         print("\n--- Informações do DataFrame ---")
         print(df_result.info())

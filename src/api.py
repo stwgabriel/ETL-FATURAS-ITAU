@@ -44,13 +44,13 @@ async def extract_invoice(file: UploadFile = File(...)):
             
         # Processar
         processor = InvoiceProcessor()
-        df = processor.process_pdf(temp_file_path)
+        df, summary = processor.process_pdf(temp_file_path)
         
         if df.empty:
             raise HTTPException(status_code=500, detail="Falha ao processar PDF ou arquivo vazio")
             
         # Reconstruct validation logic
-        total_declarado = df['valor_total_declarado'].iloc[0] if 'valor_total_declarado' in df.columns else 0.0
+        total_declarado = summary.get('valor_total_declarado', 0.0)
         total_extraido = df['valor'].sum()
         diff = total_declarado - total_extraido
         status = "OK" if abs(diff) < 1.0 else "DIVERGENTE"
